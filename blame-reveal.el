@@ -614,7 +614,8 @@ Returns (START-LINE . END-LINE)."
 
 (defun blame-reveal--get-hl-line-color ()
   "Get the background color of hl-line-face."
-  (or (face-background 'hl-line nil t)
+  (or (and (facep 'hl-line)
+           (face-background 'hl-line nil t))
       (face-background 'default)))
 
 (defun blame-reveal--format-header-text (commit-hash)
