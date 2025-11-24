@@ -1304,21 +1304,37 @@ Uses magit if `blame-reveal-use-magit' is configured to do so."
              (summary (nth 3 info))
              (description (nth 5 info))
              (desc-trimmed (if description (string-trim description) ""))
-             (buffer (get-buffer-create "*Commit Details*")))
+             (buffer-name "*Commit Details*")
+             (buffer (get-buffer-create buffer-name)))
         (with-current-buffer buffer
-          (setq buffer-read-only nil)
-          (erase-buffer)
-          (insert (format "▸ %s\n" summary))
-          (insert (format "  %s · %s · %s\n" short-hash author date))
-          (if (and desc-trimmed (not (string-empty-p desc-trimmed)))
-              (progn
-                (insert "\n")
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+
+            (insert (propertize (format "%s\n" summary)
+                               'face '(:height 1.1 :weight bold)))
+
+            (insert (propertize short-hash 'face '(:foreground "#6c9ef8" :weight bold)))
+            (insert (propertize " • " 'face '(:foreground "#666")))
+            (insert (propertize author 'face '(:foreground "#a0a0a0")))
+            (insert (propertize " • " 'face '(:foreground "#666")))
+            (insert (propertize date 'face '(:foreground "#a0a0a0")))
+            (insert "\n")
+
+            (insert (propertize (make-string 60 ?─) 'face '(:foreground "#444")))
+            (insert "\n\n")
+
+            (if (and desc-trimmed (not (string-empty-p desc-trimmed)))
                 (let ((desc-lines (split-string desc-trimmed "\n")))
                   (dolist (line desc-lines)
-                    (insert (format "  %s\n" line)))))
-            (insert "\n  (no description)\n"))
-          (goto-char (point-min))
-          (special-mode))
+                    (insert (propertize (format "%s\n" line)
+                                       'face '(:foreground "#d0d0d0")))))
+              (insert (propertize "(no description)"
+                                 'face '(:foreground "#666" :slant italic))))
+
+            (insert "\n")
+            (goto-char (point-min)))
+          (special-mode)
+          (local-set-key (kbd "q") 'quit-window))
         (pop-to-buffer buffer))
     (message "No commit info at current line")))
 
