@@ -4,8 +4,10 @@ A contextual, high-performance Git blame UI for Emacs.
 
 ** Philosophy
 
-> Blame is context, not decoration.
-> blame-reveal displays only what matters — visible lines and recent commits — keeping Emacs responsive even on very large files.
+#+begin_quote
+Blame is context, not decoration.
+blame-reveal displays only what matters — visible lines and recent commits — keeping Emacs responsive even on very large files.
+#+end_quote
 
 Unlike traditional blame tools that process entire files upfront, =blame-reveal= renders only the visible viewport plus a margin. This ensures instant activation, smooth scrolling, and minimal resource usage.
 
@@ -46,8 +48,8 @@ C1  (3d ago)   ✓ Top 20  ✓ <90d  → Colorized (gradient)
 C2  (5d ago)   ✓ Top 20  ✓ <90d  → Colorized (gradient)
 ...
 C20 (85d ago)  ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C21 (95d ago)  ✗ >90d              → Derived color (dimmed)
-C50 (2y ago)   ✗ Not top 20        → Derived color (dimmed)
+C21 (95d ago)  ✗ >90d             → Derived color (dimmed)
+C50 (2y ago)   ✗ Not top 20       → Derived color (dimmed)
 
 Result: 20 commits colorized with gradient
 #+end_src
@@ -57,9 +59,9 @@ Inactive Project Example:
 ═══════════════════════════════════════════════════════════════
 C1  (3d ago)    ✓ Top 20  ✓ <90d  → Colorized (gradient)
 C2  (5d ago)    ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C3  (100d ago)  ✓ Top 20  ✗  >90d  → Derived color (dimmed)
+C3  (100d ago)  ✓ Top 20  ✗ >90d  → Derived color (dimmed)
 ...
-C20 (2y ago)    ✓ Top 20  ✗  >90d  → Derived color (dimmed)
+C20 (2y ago)    ✓ Top 20  ✗ >90d  → Derived color (dimmed)
 
 Result: 2 commits colorized with gradient
 #+end_src
