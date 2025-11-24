@@ -136,7 +136,7 @@ See all options: M-x customize-group RET blame-reveal"
 
 (defcustom blame-reveal-display-style 'background
   "Style for commit message header.
-- 'background: Use background color
+- 'background: No background color
 - 'box: Use box border
 - 'inverse: Inverse video"
   :type '(choice (const background)
@@ -506,7 +506,7 @@ Returns nil if commit is not in recent list."
   "Convert TIMESTAMP to color based on commit age.
 
 For commits not in recent list (either not in top N or too old):
-  Returns `blame-reveal-old-commit-color' or theme-based gray.
+  Returns `blame-reveal-old-commit-color' or theme-based color.
 
 For commits in recent list (in top N AND within time limit):
   If `blame-reveal-recent-commit-color' is:
@@ -514,14 +514,13 @@ For commits in recent list (in top N AND within time limit):
     - Color string: Uses that fixed color
     - nil: Uses gradient based on rank in recent list"
   (if (not blame-reveal--timestamps)
-      "#6699cc"
+      (blame-reveal--get-fallback-color)
     (let ((is-dark (blame-reveal--is-dark-theme-p)))
 
       ;; Check if this is a recent commit (in top N AND within time limit)
       (if (not (blame-reveal--is-recent-commit-p commit-hash))
           ;; Old commit (not in recent list)
-          (or blame-reveal-old-commit-color
-              (if is-dark "#4a4a4a" "#d0d0d0"))
+          (blame-reveal--get-old-commit-color)
 
         ;; Recent commit (in top N AND within time limit)
         (cond
@@ -536,7 +535,7 @@ For commits in recent list (in top N AND within time limit):
          ;; Auto gradient based on rank
          (t
           (or (blame-reveal--relative-color-by-rank commit-hash is-dark)
-              "#6699cc")))))))
+              (blame-reveal--get-fallback-color))))))))
 
 (defun blame-reveal--get-commit-color (commit-hash)
   "Get color for COMMIT-HASH, calculating if necessary."
@@ -548,7 +547,7 @@ For commits in recent list (in top N AND within time limit):
                (timestamp (and info (nth 4 info)))
                (color (if timestamp
                           (blame-reveal--timestamp-to-color timestamp commit-hash)
-                        "#6699cc")))
+                          (blame-reveal--get-fallback-color))))
           (puthash commit-hash color blame-reveal--color-map)
           color))))
 
@@ -699,11 +698,32 @@ Returns (START-LINE . END-LINE)."
                                        fringe-face)))
         overlay))))
 
-(defun blame-reveal--get-hl-line-color ()
-  "Get the background color of hl-line-face."
-  (or (and (facep 'hl-line)
-           (face-background 'hl-line nil t))
-      (face-background 'default)))
+(defun blame-reveal--get-fallback-color ()
+  "Get fallback color when color calculation fails.
+Returns a neutral color based on current theme."
+  (if (blame-reveal--is-dark-theme-p)
+      "#6699cc"  ; Blue for dark theme
+    "#7799bb"))
+
+(defun blame-reveal--get-old-commit-color ()
+  "Get color for old commits (not in recent list).
+The color is derived from the color scheme to be:
+- Dark theme: darker than all recent commits
+- Light theme: lighter than all recent commits"
+  (or blame-reveal-old-commit-color
+      (let* ((is-dark (blame-reveal--is-dark-theme-p))
+             (hue (plist-get blame-reveal-color-scheme :hue))
+             ;; Use minimum saturation for old commits
+             (saturation (plist-get blame-reveal-color-scheme :saturation-min))
+             ;; Lightness: make it darker/lighter than the oldest recent commit
+             (lightness (if is-dark
+                            ;; Dark: make it darker than oldest recent
+                            (let ((oldest (plist-get blame-reveal-color-scheme :dark-oldest)))
+                              (* oldest 0.7))  ; 30% darker
+                          ;; Light: make it lighter than oldest recent
+                          (let ((oldest (plist-get blame-reveal-color-scheme :light-oldest)))
+                            (+ oldest (* (- 1.0 oldest) 0.5))))))  ; 50% towards white
+        (blame-reveal--hsl-to-hex hue saturation lightness))))
 
 (defun blame-reveal--is-uncommitted-p (commit-hash)
   "Check if COMMIT-HASH represents uncommitted changes."
@@ -774,7 +794,6 @@ If NO-FRINGE is non-nil, don't show fringe indicators."
         (let* ((overlay (make-overlay pos pos))
                (header-text (blame-reveal--format-header-text commit-hash))
                (fringe-face (blame-reveal--ensure-fringe-face color))
-               (hl-bg (blame-reveal--get-hl-line-color))
                ;; Get configured weights and heights
                (header-weight blame-reveal-header-weight)
                (header-height blame-reveal-header-height)
@@ -784,25 +803,25 @@ If NO-FRINGE is non-nil, don't show fringe indicators."
                (description-height blame-reveal-description-height)
                ;; Header line style
                (header-face (pcase blame-reveal-display-style
-                              ('background (list :background hl-bg :foreground color :weight header-weight :height header-height))
-                              ('box (list :background hl-bg :foreground color :weight header-weight :height header-height
+                              ('background (list :foreground color :weight header-weight :height header-height))
+                              ('box (list :foreground color :weight header-weight :height header-height
                                           :box (list :line-width 1 :color color)))
-                              ('inverse (list :background color :foreground hl-bg :weight header-weight :height header-height))
-                              (_ (list :background hl-bg :foreground color :weight header-weight :height header-height))))
+                              ('inverse (list :background color :weight header-weight :height header-height))
+                              (_ (list :foreground color :weight header-weight :height header-height))))
                ;; Metadata line style
                (metadata-face (pcase blame-reveal-display-style
-                                ('background (list :background hl-bg :foreground color :weight metadata-weight :height metadata-height))
-                                ('box (list :background hl-bg :foreground color :weight metadata-weight :height metadata-height
+                                ('background (list :foreground color :weight metadata-weight :height metadata-height))
+                                ('box (list :foreground color :weight metadata-weight :height metadata-height
                                             :box (list :line-width 1 :color color)))
-                                ('inverse (list :background color :foreground hl-bg :weight metadata-weight :height metadata-height))
-                                (_ (list :background hl-bg :foreground color :weight metadata-weight :height metadata-height))))
+                                ('inverse (list :background color :weight metadata-weight :height metadata-height))
+                                (_ (list :foreground color :weight metadata-weight :height metadata-height))))
                ;; Description line style
                (description-face (pcase blame-reveal-display-style
-                                   ('background (list :background hl-bg :foreground color :weight description-weight :height description-height))
-                                   ('box (list :background hl-bg :foreground color :weight description-weight :height description-height
+                                   ('background (list :foreground color :weight description-weight :height description-height))
+                                   ('box (list :foreground color :weight description-weight :height description-height
                                                :box (list :line-width 1 :color color)))
-                                   ('inverse (list :background color :foreground hl-bg :weight description-weight :height description-height))
-                                   (_ (list :background hl-bg :foreground color :weight description-weight :height description-height))))
+                                   ('inverse (list :background color :weight description-weight :height description-height))
+                                   (_ (list :foreground color :weight description-weight :height description-height))))
                ;; Split header text into lines
                (header-lines (split-string header-text "\n"))
                ;; Need leading newline if inserting at end of line (except for line 1)
@@ -1079,15 +1098,13 @@ Returns list of created overlays."
                                      (not (blame-reveal--should-render-commit commit-hash))))
                  ;; Color selection:
                  ;; 1. Uncommitted: use special uncommitted color
-                 ;; 2. Old commits: use gray color
+                 ;; 2. Old commits: use derived color from scheme
                  ;; 3. Recent commits: use calculated color
                  (color (cond
                          (is-uncommitted
                           (blame-reveal--get-uncommitted-color))
                          (is-old-commit
-                          (let ((is-dark (blame-reveal--is-dark-theme-p)))
-                            (or blame-reveal-old-commit-color
-                                (if is-dark "#4a4a4a" "#d0d0d0"))))
+                          (blame-reveal--get-old-commit-color))
                          (t
                           (blame-reveal--get-commit-color commit-hash))))
                  ;; Determine if we should hide header fringe for uncommitted changes
