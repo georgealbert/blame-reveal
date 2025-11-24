@@ -242,6 +242,30 @@ The gradient color scheme for recent commits uses HSL (Hue, Saturation, Lightnes
       blame-reveal-recent-days-limit nil)
 #+end_src
 
+*** Uncommitted Changes
+
+#+begin_src elisp
+(setq blame-reveal-uncommitted-label "Uncommitted changes")  ; Default: "Uncommitted changes"
+(setq blame-reveal-uncommitted-color nil)                    ; Default: nil (auto theme-based)
+(setq blame-reveal-show-uncommitted-fringe nil)              ; Default: nil
+#+end_src
+
+/Examples:/
+#+begin_src elisp
+;; Custom label and color
+(setq blame-reveal-uncommitted-label "Local changes"
+      blame-reveal-uncommitted-color "#ff8c00")
+
+;; Show fringe for uncommitted changes (not recommended with diff-hl)
+(setq blame-reveal-show-uncommitted-fringe t)
+
+;; Minimal setup (recommended with diff-hl)
+(setq blame-reveal-show-uncommitted-fringe nil
+      blame-reveal-uncommitted-color nil)  ; Auto theme-based color
+#+end_src
+
+/Tip:/ When using with [[https://github.com/dgutov/diff-hl][diff-hl]], enabling ~diff-hl-margin-mode~ is recommended for a better experience. (Without it, both indicators will be in the fringe, which still works fine.)
+
 *** Color Overrides
 
 Override automatic gradient with fixed colors:
