@@ -1288,6 +1288,51 @@ Returns list of created overlays."
   "Load commit info for visible area only (lazy loading)."
   (blame-reveal--ensure-visible-commits-loaded))
 
+(defun blame-reveal--load-blame-data-impl (buffer)
+  "Implementation of blame data loading for BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let* ((file (buffer-file-name))
+             (use-lazy (blame-reveal--should-lazy-load-p))
+             (blame-data nil))
+
+        (if use-lazy
+            ;; Large file: only load visible region
+            (let* ((range (blame-reveal--get-visible-line-range))
+                   (start-line (car range))
+                   (end-line (cdr range)))
+              (setq blame-data (blame-reveal--get-blame-data-range
+                                start-line end-line))
+              (setq blame-reveal--blame-data-range (cons start-line end-line))
+              (when blame-data
+                (message "Git blame loaded (lazy): %d lines (range %d-%d)"
+                         (length blame-data) start-line end-line)))
+
+          ;; Small file: load entire file
+          (setq blame-data (blame-reveal--get-blame-data))
+          (setq blame-reveal--blame-data-range nil)  ; nil = full load
+          (when blame-data
+            (message "Git blame loaded (full): %d lines" (length blame-data))))
+
+        (if blame-data
+            (progn
+              (setq blame-reveal--blame-data blame-data)
+              (setq blame-reveal--commit-info (make-hash-table :test 'equal))
+              (setq blame-reveal--color-map (make-hash-table :test 'equal))
+              (setq blame-reveal--timestamps nil)
+              (setq blame-reveal--recent-commits nil)
+              (setq blame-reveal--all-commits-loaded nil)
+              (setq blame-reveal--loading nil)
+
+              ;; Load commits incrementally
+              (blame-reveal--load-commits-incrementally)
+
+              ;; Initial render
+              (blame-reveal--render-visible-region))
+
+          (setq blame-reveal--loading nil)
+          (message "No git blame data available"))))))
+
 (defun blame-reveal--load-blame-data ()
   "Load git blame data.
 Use lazy loading for large files, full loading for small files."
@@ -1296,52 +1341,9 @@ Use lazy loading for large files, full loading for small files."
     (let ((use-lazy (blame-reveal--should-lazy-load-p)))
       (message "Loading git blame data%s..."
                (if use-lazy " (lazy mode)" "")))
-    (run-with-idle-timer
-     0.01 nil
-     (lambda (buffer)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (let* ((file (buffer-file-name))
-                  (use-lazy (blame-reveal--should-lazy-load-p))
-                  (blame-data nil))
-
-             (if use-lazy
-                 ;; Large file: only load visible region
-                 (let* ((range (blame-reveal--get-visible-line-range))
-                        (start-line (car range))
-                        (end-line (cdr range)))
-                   (setq blame-data (blame-reveal--get-blame-data-range
-                                     start-line end-line))
-                   (setq blame-reveal--blame-data-range (cons start-line end-line))
-                   (when blame-data
-                     (message "Git blame loaded (lazy): %d lines (range %d-%d)"
-                              (length blame-data) start-line end-line)))
-
-               ;; Small file: load entire file
-               (setq blame-data (blame-reveal--get-blame-data))
-               (setq blame-reveal--blame-data-range nil)  ; nil = full load
-               (when blame-data
-                 (message "Git blame loaded (full): %d lines" (length blame-data))))
-
-             (if blame-data
-                 (progn
-                   (setq blame-reveal--blame-data blame-data)
-                   (setq blame-reveal--commit-info (make-hash-table :test 'equal))
-                   (setq blame-reveal--color-map (make-hash-table :test 'equal))
-                   (setq blame-reveal--timestamps nil)
-                   (setq blame-reveal--recent-commits nil)
-                   (setq blame-reveal--all-commits-loaded nil)
-                   (setq blame-reveal--loading nil)
-
-                   ;; Load commits incrementally
-                   (blame-reveal--load-commits-incrementally)
-
-                   ;; Initial render
-                   (blame-reveal--render-visible-region))
-
-               (setq blame-reveal--loading nil)
-               (message "No git blame data available"))))))
-     (current-buffer))))
+    (run-with-idle-timer 0.01 nil
+                         #'blame-reveal--load-blame-data-impl
+                         (current-buffer))))
 
 (defun blame-reveal--full-update ()
   "Full update: reload blame data and render visible region."
@@ -1516,39 +1518,42 @@ Use lazy loading for large files, full loading for small files."
   "Handle window scroll events."
   (blame-reveal--on-scroll))
 
+(defun blame-reveal--theme-change-handler ()
+  "Handle theme change for all blame-reveal buffers.
+Recalculates colors and refreshes all displays."
+  (let ((current-buf (current-buffer))
+        (current-point (point)))
+    ;; Re-render fringe overlays with new theme colors in all buffers
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when blame-reveal-mode
+          (blame-reveal--recolor-and-render))))
+
+    ;; Refresh header in current buffer if it exists
+    (when (buffer-live-p current-buf)
+      (with-current-buffer current-buf
+        (when (and blame-reveal-mode
+                   blame-reveal--current-block-commit)
+          (save-excursion
+            (goto-char current-point)
+            ;; Force header refresh by clearing and re-triggering
+            (let ((old-commit blame-reveal--current-block-commit))
+              (setq blame-reveal--current-block-commit nil)
+              ;; Clear existing header
+              (when blame-reveal--header-overlay
+                (delete-overlay blame-reveal--header-overlay)
+                (setq blame-reveal--header-overlay nil))
+              ;; Clear temp overlays
+              (blame-reveal--clear-temp-overlays)
+              ;; Re-trigger header update
+              (blame-reveal--update-header))))))))
+
 (defun blame-reveal--on-theme-change (&rest _)
   "Handle theme change event and refresh all blame displays."
   (when blame-reveal--theme-change-timer
     (cancel-timer blame-reveal--theme-change-timer))
   (setq blame-reveal--theme-change-timer
-        (run-with-timer 0.3 nil
-                        (lambda ()
-                          (let ((current-buf (current-buffer))
-                                (current-point (point)))
-                            (dolist (buffer (buffer-list))
-                              (with-current-buffer buffer
-                                (when blame-reveal-mode
-                                  ;; Re-render fringe overlays with new theme colors
-                                  (blame-reveal--recolor-and-render))))
-
-                            ;; Refresh header in current buffer if it exists
-                            (when (buffer-live-p current-buf)
-                              (with-current-buffer current-buf
-                                (when (and blame-reveal-mode
-                                           blame-reveal--current-block-commit)
-                                  (save-excursion
-                                    (goto-char current-point)
-                                    ;; Force header refresh by clearing and re-triggering
-                                    (let ((old-commit blame-reveal--current-block-commit))
-                                      (setq blame-reveal--current-block-commit nil)
-                                      ;; Clear existing header
-                                      (when blame-reveal--header-overlay
-                                        (delete-overlay blame-reveal--header-overlay)
-                                        (setq blame-reveal--header-overlay nil))
-                                      ;; Clear temp overlays
-                                      (blame-reveal--clear-temp-overlays)
-                                      ;; Re-trigger header update
-                                      (blame-reveal--update-header)))))))))))
+        (run-with-timer 0.3 nil #'blame-reveal--theme-change-handler)))
 
 (defun blame-reveal--setup-theme-advice ()
   "Setup advice to monitor theme changes."
@@ -1611,6 +1616,37 @@ Use lazy loading for large files, full loading for small files."
 
 ;;;; Interactive Commands
 
+(defun blame-reveal--revert-commit-diff (commit-hash)
+  "Revert function for commit diff buffer showing COMMIT-HASH."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (call-process "git" nil t nil "show" "--color=never" commit-hash)
+    (goto-char (point-min))))
+
+(defun blame-reveal--revert-file-log (file)
+  "Revert function for git log buffer of FILE."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (call-process "git" nil t nil "log"
+                  "--color=always"
+                  "--follow"
+                  "--pretty=format:%C(yellow)%h%Creset - %s %C(green)(%an, %ar)%Creset"
+                  "--" file)
+    (goto-char (point-min))
+    (require 'ansi-color)
+    (ansi-color-apply-on-region (point-min) (point-max))))
+
+(defun blame-reveal--revert-line-log (line-num file)
+  "Revert function for git log buffer of LINE-NUM in FILE."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (call-process "git" nil t nil "log"
+                  "--color=always"
+                  "-L" (format "%d,%d:%s" line-num line-num file))
+    (goto-char (point-min))
+    (require 'ansi-color)
+    (ansi-color-apply-on-region (point-min) (point-max))))
+
 ;;;###autoload
 (defun blame-reveal-copy-commit-hash ()
   "Copy the commit hash of the current line to kill ring."
@@ -1645,10 +1681,7 @@ Uses magit if `blame-reveal-use-magit' is configured to do so."
               (view-mode 1)
               (setq-local revert-buffer-function
                           (lambda (&rest _)
-                            (let ((inhibit-read-only t))
-                              (erase-buffer)
-                              (call-process "git" nil t nil "show" "--color=never" commit-hash)
-                              (goto-char (point-min))))))
+                            (blame-reveal--revert-commit-diff commit-hash))))
             (pop-to-buffer (current-buffer)))))
     (message "No commit info at current line")))
 
@@ -1723,15 +1756,7 @@ Uses magit if `blame-reveal-use-magit' is configured to do so."
                   (special-mode)
                   (setq-local revert-buffer-function
                               (lambda (&rest _)
-                                (let ((inhibit-read-only t))
-                                  (erase-buffer)
-                                  (call-process "git" nil t nil "log"
-                                                "--color=always"
-                                                "--follow"
-                                                "--pretty=format:%C(yellow)%h%Creset - %s %C(green)(%an, %ar)%Creset"
-                                                "--" file)
-                                  (goto-char (point-min))
-                                  (ansi-color-apply-on-region (point-min) (point-max))))))
+                                (blame-reveal--revert-file-log file))))
                 (pop-to-buffer (current-buffer)))))
         (message "File is not tracked by git"))
     (message "No file associated with current buffer")))
@@ -1759,13 +1784,7 @@ This function always uses built-in git."
                 (special-mode)
                 (setq-local revert-buffer-function
                             (lambda (&rest _)
-                              (let ((inhibit-read-only t))
-                                (erase-buffer)
-                                (call-process "git" nil t nil "log"
-                                              "--color=always"
-                                              "-L" (format "%d,%d:%s" line-num line-num file))
-                                (goto-char (point-min))
-                                (ansi-color-apply-on-region (point-min) (point-max))))))
+                              (blame-reveal--revert-line-log line-num file))))
               (pop-to-buffer (current-buffer))))
         (message "File is not tracked by git"))
     (message "No file associated with current buffer")))
