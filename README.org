@@ -1,6 +1,6 @@
 * blame-reveal.el
 
-A contextual, high-performance Git blame UI for Emacs.
+A contextual, high-performance Git blame UI for Emacs with recursive history navigation.
 
 ** Philosophy
 
@@ -25,109 +25,113 @@ The green margin here is the effect of the [[https://github.com/dgutov/diff-hl][
 *** Visual Indicators
 
 - *Color-coded fringe blocks* (IDEA-style)
-  - *Recent commits* (top N, within time limit): Gradient colors, always visible
-    - Color intensity by rank (newest = brightest)
-  - *Old commits* (not in top N or beyond time limit): Derived color from scheme, visible only when cursor is on them
-    - Smart highlighting: All visible lines from same commit temporarily highlighted
+  - Recent commits (top N, within time limit): Gradient colors, always visible
+  - Old commits: Derived color, visible only when cursor is on them
   - Automatic theme adaptation (dark/light)
 
 - *Inline commit headers* above each block
-  - Three formats: =line= (message), =compact= (+ metadata), =full= (+ description)
-  - Styles: background, box, or inverse video
-  - Customizable typography (weight, height)
+  - Formats: =line= / =compact= / =full=
+  - Styles: =background= / =box= / =inverse=
+  - Customizable typography
 
-*** Commit Selection
+*** Commit Selection & Colors
 
-Recent commits must satisfy *both* conditions:
+Recent commits must satisfy *both* conditions (except in recursive blame):
 
 #+begin_src
-Active Project Example:
+Active Project (many recent commits):
 ═══════════════════════════════════════════════════════════════
-Today ←──────────── 90 days ───────→ 2 years ago
+C1-C20  (within 90d)  → Gradient colors (newest = brightest)
+C21+    (>90d or not top 20) → Derived color (dimmed)
 
-C1  (3d ago)   ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C2  (5d ago)   ✓ Top 20  ✓ <90d  → Colorized (gradient)
-...
-C20 (85d ago)  ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C21 (95d ago)  ✗ >90d            → Derived color (dimmed)
-C50 (2y ago)   ✗ Not top 20      → Derived color (dimmed)
-
-Result: 20 commits colorized with gradient
-#+end_src
-
-#+begin_src
-Inactive Project Example:
+Inactive Project (few recent commits):
 ═══════════════════════════════════════════════════════════════
-C1  (3d ago)    ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C2  (5d ago)    ✓ Top 20  ✓ <90d  → Colorized (gradient)
-C3  (100d ago)  ✓ Top 20  ✗ >90d  → Derived color (dimmed)
-...
-C20 (2y ago)    ✓ Top 20  ✗ >90d  → Derived color (dimmed)
-
-Result: 2 commits colorized with gradient
+C1-C2   (within 90d)  → Gradient colors
+C3-C20  (>90d)        → Derived color (dimmed)
 #+end_src
 
-*Auto-Expand Mode* (default: =t=)
+/Auto-Expand Mode/ (=blame-reveal-auto-expand-recent=):
+- =t= (default): All commits within time limit (ignores count)
+- =nil=: Strictly top N AND within time limit
+
+/Recursive Blame Exception/: Time limit always ignored (shows top N at that point in history)
+
+*** Recursive Blame Navigation
+
+Navigate through the complete history of a line:
 
 #+begin_src
-With auto-expand:    All commits <90d colorized (ignores count)
-Without auto-expand: Max 20 commits AND <90d
+Example workflow:
+  Line 50: Bob (def456) at HEAD
+  Mode line: [HEAD] ← Which snapshot you're viewing
+
+  Press 'b': Bob (def456) → Charlie (ghi789)
+  Mode line: [def456^]
+
+  Press 'b': Charlie (ghi789) → Dave (jkl012)
+  Mode line: [ghi789^]
+
+  Press 'r': Reset to HEAD
+
+Note: The mode line shows which file version you're viewing,
+      while line annotations show who last modified each line.
+      These can differ when commits change other lines.
+
+Use cases:
+  - Find original author of a line
+  - Track bug introduction point
+  - Understand code evolution
 #+end_src
 
-In short: recent commits get gradient colors; older history uses derived colors and stays unobtrusive until inspected.
+*** Performance
 
-*** Color Gradient
+/Lazy Loading/ (configurable threshold):
+- Small files (< 5000 lines): Full load
+- Large files (≥ 5000 lines): Visible region only, expand on scroll
 
-Colors assigned by *relative rank* among recent commits:
+/Incremental Loading/:
+1. Visible commits (immediate)
+2. Remaining commits (background, on-demand)
+3. Re-render only when needed
 
-#+begin_src
-Rank 1  (newest)  ████████  Brightest  #5A9FD4
-Rank 10           ████░░░░  Medium     #4F8FBF
-Rank 20 (oldest)  █░░░░░░░  Darkest    #4A7BA7
-Rank 21+          ▓▓▓▓▓▓▓▓  Derived    #3A5A7A (darker/lighter than oldest)
+/Benchmarks/ (10,000+ lines, 500+ commits):
 
-- HSL gradient with ease-out curve
-- Dark theme: newer = brighter, old = darker
-- Light theme: newer = darker, old = lighter
-#+end_src
-
-*** Performance Optimizations
-
-*Incremental Loading*
-1. Phase 1: Visible commits (immediate, synchronous)
-2. Phase 2: Remaining commits (background, 20/batch)
-3. Re-render only when recent list changes
-
-*Other Optimizations*
-- Viewport-based rendering (visible + margin)
-- Lazy commit loading (on-demand)
-- Debounced updates (scroll, theme)
-- Efficient caching (per buffer)
+| Operation       | Time   | Notes          |
+|-----------------+--------+----------------|
+| Initial load    | <100ms | Visible region |
+| Scroll          | <50ms  | Debounced      |
+| Recursive blame | <200ms | Full file load |
+| Memory          | ~1-2MB | Per buffer     |
 
 *** Interactive Commands
 
-| Key | Command                            | Action       |
-|-----+------------------------------------+--------------|
-| =q= | =blame-reveal-mode=                | Toggle       |
-| =c= | =blame-reveal-copy-commit-hash=    | Copy hash    |
-| =d= | =blame-reveal-show-commit-diff=    | Show diff    |
-| =s= | =blame-reveal-show-commit-details= | Full message |
-| =h= | =blame-reveal-show-file-history=   | File log     |
-| =l= | =blame-reveal-show-line-history=   | Line log     |
+| Key | Command                          | Action                 |
+|-----+----------------------------------+------------------------|
+| =q=   | =blame-reveal-mode=                | Toggle                 |
+| =c=   | =blame-reveal-copy-commit-hash=    | Copy hash              |
+| =d=   | =blame-reveal-show-commit-diff=    | Show diff              |
+| =s=   | =blame-reveal-show-commit-details= | Full message           |
+| =h=   | =blame-reveal-show-file-history=   | File log               |
+| =l=   | =blame-reveal-show-line-history=   | Line log               |
+| =b=   | =blame-reveal-blame-recursively=   | Blame at parent commit |
+| =p/^= | =blame-reveal-blame-back=          | Return to previous     |
+| =g=   | =blame-reveal-blame-at-revision=   | Blame at specific rev  |
+| =r=   | =blame-reveal-reset-to-head=       | Reset to HEAD          |
 
 ** Installation
 
-*Manual*
 #+begin_src elisp
+;; Manual
 (add-to-list 'load-path "/path/to/blame-reveal")
 (require 'blame-reveal)
-#+end_src
+(require 'blame-reveal-recursive)  ; Optional: for recursive blame
 
-*use-package*
-#+begin_src elisp
+;; use-package
 (use-package blame-reveal
   :load-path "/path/to/blame-reveal"
-  :commands blame-reveal-mode)
+  :commands blame-reveal-mode
+  :config
+  (require 'blame-reveal-recursive))
 #+end_src
 
 ** Usage
@@ -141,229 +145,199 @@ M-x blame-reveal-mode
 
 ** Customization
 
-*** Display
+*** Display & Typography
 
 #+begin_src elisp
-(setq blame-reveal-style 'left-fringe)          ; or 'right-fringe
+;; Fringe & Layout
+(setq blame-reveal-style 'left-fringe)          ; 'left-fringe, 'right-fringe
 (setq blame-reveal-display-layout 'compact)     ; 'line, 'compact, 'full
 (setq blame-reveal-display-style 'background)   ; 'background, 'box, 'inverse
-#+end_src
 
-*** Typography
+;; Typography (commit message)
+(setq blame-reveal-header-weight 'bold
+      blame-reveal-header-height 1.0)
 
-#+begin_src elisp
-;; Commit message line
-(setq blame-reveal-header-weight 'bold          ; 'bold, 'normal, 'semi-bold, 'extra-bold
-      blame-reveal-header-height 1.0)           ; 1.0 = default size
+;; Typography (metadata: hash, author, date)
+(setq blame-reveal-metadata-weight 'normal
+      blame-reveal-metadata-height 0.9)
 
-;; Metadata line (hash, author, date)
-(setq blame-reveal-metadata-weight 'normal      ; 'bold, 'normal, 'semi-bold, 'light
-      blame-reveal-metadata-height 0.9)         ; 0.9 = 90% of default
-
-;; Description lines
-(setq blame-reveal-description-weight 'normal   ; 'bold, 'normal, 'semi-bold, 'light
-      blame-reveal-description-height 0.9)      ; 0.9 = 90% of default
+;; Typography (description)
+(setq blame-reveal-description-weight 'normal
+      blame-reveal-description-height 0.9)
 #+end_src
 
 *** Color Scheme
 
-The gradient color scheme for recent commits uses HSL (Hue, Saturation, Lightness) parameters.
-Old commits automatically get a derived color that's darker (dark theme) or lighter (light theme) than the oldest recent commit:
+The gradient uses HSL parameters. Old commits get a derived color (darker/lighter than oldest recent):
 
 #+begin_src elisp
+;; Default (Blue)
 (setq blame-reveal-color-scheme
-      '(:hue 210                    ; Blue (0-360: 0=red, 120=green, 210=blue, 280=purple)
-        :dark-newest 0.70           ; Lightness for newest (dark theme, higher=brighter)
-        :dark-oldest 0.35           ; Lightness for oldest recent (dark theme)
-        :light-newest 0.45          ; Lightness for newest (light theme, lower=darker)
-        :light-oldest 0.75          ; Lightness for oldest recent (light theme)
-        :saturation-min 0.25        ; Minimum saturation (oldest commits)
-        :saturation-max 0.60))      ; Maximum saturation (newest commits)
-#+end_src
+      '(:hue 210                    ; 0=red, 120=green, 210=blue, 280=purple
+        :dark-newest 0.70           ; Dark theme: higher = brighter
+        :dark-oldest 0.35
+        :light-newest 0.45          ; Light theme: lower = darker
+        :light-oldest 0.75
+        :saturation-min 0.25        ; Oldest commits
+        :saturation-max 0.60))      ; Newest commits
 
-/Preset Schemes:/
-
-#+begin_src elisp
-;; High contrast (more dramatic gradient)
+;; Presets
 (setq blame-reveal-color-scheme
-      '(:hue 210
-        :dark-newest 0.75 :dark-oldest 0.30
+      '(:hue 210 :dark-newest 0.75 :dark-oldest 0.30
         :light-newest 0.35 :light-oldest 0.85
-        :saturation-min 0.35 :saturation-max 0.70))
+        :saturation-min 0.35 :saturation-max 0.70))  ; High contrast
 
-;; Green
 (setq blame-reveal-color-scheme
-      '(:hue 120
-        :dark-newest 0.70 :dark-oldest 0.35
+      '(:hue 120 :dark-newest 0.70 :dark-oldest 0.35
         :light-newest 0.40 :light-oldest 0.75
-        :saturation-min 0.25 :saturation-max 0.60))
+        :saturation-min 0.25 :saturation-max 0.60))  ; Green
 
-;; Purple
 (setq blame-reveal-color-scheme
-      '(:hue 280
-        :dark-newest 0.70 :dark-oldest 0.35
+      '(:hue 280 :dark-newest 0.70 :dark-oldest 0.35
         :light-newest 0.45 :light-oldest 0.75
-        :saturation-min 0.25 :saturation-max 0.60))
-
-;; Subtle (less contrast)
-(setq blame-reveal-color-scheme
-      '(:hue 210
-        :dark-newest 0.60 :dark-oldest 0.40
-        :light-newest 0.55 :light-oldest 0.70
-        :saturation-min 0.20 :saturation-max 0.45))
+        :saturation-min 0.25 :saturation-max 0.60))  ; Purple
 #+end_src
-
-/How it works:/
-- Gradient applied to recent commits (top N within time limit)
-- Newest commit gets highest saturation + theme-appropriate lightness
-- Oldest recent commit gets lowest saturation + theme-appropriate lightness
-- Old commits get derived color (30% darker/50% lighter than oldest recent)
-- Ease-out curve makes newest commits stand out more
 
 *** Commit Selection
 
 #+begin_src elisp
+;; How many commits to highlight
 (setq blame-reveal-recent-commit-count 20)      ; Default: 20
+
+;; Maximum age for recent commits (days)
 (setq blame-reveal-recent-days-limit 90)        ; Default: 90 (nil = no limit)
+
+;; Auto-expand: all within time vs strict top N
 (setq blame-reveal-auto-expand-recent t)        ; Default: t
-#+end_src
 
-/Examples:/
-#+begin_src elisp
-;; All commits from last month
+;; Recursive blame: ignore time limit?
+(setq blame-reveal-recursive-ignore-time-limit t)  ; Default: t (recommended)
+
+;; Examples:
+;; Active project: all commits from last month
 (setq blame-reveal-auto-expand-recent t
-      blame-reveal-recent-days-limit 30)
+      blame-reveal-recent-days-limit 30
+      blame-reveal-recursive-ignore-time-limit t)
 
-;; Exactly top 10, max 2 weeks
+;; Inactive project: exactly top 10, no time limit
 (setq blame-reveal-auto-expand-recent nil
       blame-reveal-recent-commit-count 10
-      blame-reveal-recent-days-limit 14)
+      blame-reveal-recent-days-limit nil
+      blame-reveal-recursive-ignore-time-limit t)
 
-;; Top 50, no time limit
+;; Strict mode: always respect time limit (even in recursive)
 (setq blame-reveal-auto-expand-recent nil
-      blame-reveal-recent-commit-count 50
-      blame-reveal-recent-days-limit nil)
+      blame-reveal-recent-days-limit 90
+      blame-reveal-recursive-ignore-time-limit nil)
 #+end_src
+
+How these work together:/
+
+| Mode            | =auto-expand= | =ignore-time= | Behavior                      |
+|-----------------+-------------+-------------+-------------------------------|
+| Normal blame    | =t=           | N/A         | All commits within time limit |
+| Normal blame    | =nil=         | N/A         | Top N AND within time limit   |
+| Recursive blame | any         | =t=           | Top N (time ignored)          |
+| Recursive blame | =t=           | =nil=         | All within time limit         |
+| Recursive blame | =nil=         | =nil=         | Top N AND within time limit   |
+
+/Why =ignore-time=t= is recommended for recursive blame:/
+
+When viewing a revision from 3 years ago, filtering by "last 90 days from now" would show nothing useful. Setting this to =t= shows the N most recent commits /at that point in history/, making historical exploration meaningful.
 
 *** Uncommitted Changes
 
 #+begin_src elisp
-(setq blame-reveal-uncommitted-label "Uncommitted changes")  ; Default: "Uncommitted changes"
-(setq blame-reveal-uncommitted-color nil)                    ; Default: nil (auto theme-based)
-(setq blame-reveal-show-uncommitted-fringe nil)              ; Default: nil
+(setq blame-reveal-uncommitted-label "Uncommitted changes")
+(setq blame-reveal-uncommitted-color nil)           ; Auto theme-based
+(setq blame-reveal-show-uncommitted-fringe nil)     ; Only header, no fringe
 #+end_src
 
-/Examples:/
+/Tip/: Keep =show-uncommitted-fringe= as =nil= when using [[https://github.com/dgutov/diff-hl][diff-hl]]:
+
 #+begin_src elisp
-;; Custom label and color
-(setq blame-reveal-uncommitted-label "Local changes"
-      blame-reveal-uncommitted-color "#ff8c00")
+(use-package diff-hl
+  :config
+  (global-diff-hl-mode)
+  (diff-hl-margin-mode))  ; Recommended
 
-;; Show fringe for uncommitted changes (not recommended with diff-hl)
-(setq blame-reveal-show-uncommitted-fringe t)
-
-;; Minimal setup (recommended with diff-hl)
-(setq blame-reveal-show-uncommitted-fringe nil
-      blame-reveal-uncommitted-color nil)  ; Auto theme-based color
+(use-package blame-reveal
+  :config
+  (setq blame-reveal-show-uncommitted-fringe nil))
 #+end_src
-
-/Tip:/ When using with [[https://github.com/dgutov/diff-hl][diff-hl]], enabling =diff-hl-margin-mode= is recommended for a better experience. (Without it, both indicators will be in the fringe, which still works fine.)
 
 *** Color Overrides
 
-Override automatic gradient and derived colors with fixed colors:
-
 #+begin_src elisp
-;; Recent commits (default: auto gradient)
-(setq blame-reveal-recent-commit-color nil)         ; Auto gradient (recommended)
-;;    blame-reveal-recent-commit-color "#6699cc")   ; Fixed color for all recent
-;;    blame-reveal-recent-commit-color              ; Custom function
-;;      (lambda (timestamp)
-;;        (if (< (- (float-time) timestamp) 86400)
-;;            "#ff6b6b"  ; Red for commits < 1 day
-;;          "#6699cc"))) ; Blue for older
+;; Override auto gradient
+(setq blame-reveal-recent-commit-color nil)         ; Auto gradient (default)
+;;    blame-reveal-recent-commit-color "#6699cc")   ; Fixed color
+;;    blame-reveal-recent-commit-color
+;;      (lambda (ts) ...))                          ; Custom function
 
-;; Old commits (default: derived from color scheme)
-(setq blame-reveal-old-commit-color nil)            ; Auto: derived from scheme
+;; Override derived color for old commits
+(setq blame-reveal-old-commit-color nil)            ; Auto derived (default)
 ;;    blame-reveal-old-commit-color "#888888")      ; Fixed color
 #+end_src
-
-/Note:/ =blame-reveal-color-scheme= is ignored when =blame-reveal-recent-commit-color= is set to a fixed color or function.
 
 *** Performance
 
 #+begin_src elisp
 (setq blame-reveal-render-margin 50)            ; Lines beyond viewport
-(setq blame-reveal-temp-overlay-delay 0.05)     ; Old commit overlay delay (seconds)
+(setq blame-reveal-lazy-load-threshold 5000)    ; Lazy load files ≥ 5000 lines
+(setq blame-reveal-temp-overlay-delay 0.05)     ; Old commit overlay delay (s)
 #+end_src
 
 *** Magit Integration
 
 #+begin_src elisp
-(setq blame-reveal-use-magit 'auto)  ; auto, t, or nil
+(setq blame-reveal-use-magit 'auto)  ; 'auto, t, or nil
 #+end_src
-
-** How It Works
-
-#+begin_src
-Loading:
-1. Parse git blame → line-commit mapping
-2. Load visible commits (immediate)
-3. Load remaining commits (background, 20/batch)
-
-Rendering:
-1. Calculate visible range (viewport + margin)
-2. Find blocks in range
-3. Render recent commits (permanent fringe with gradient)
-4. On cursor move to old commit → render derived color (temporary)
-5. On scroll → re-render (debounced)
-#+end_src
-
-** Performance
-
-Tested on 10,000+ lines, 500+ commits:
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Initial load | <100ms | Visible region only |
-| Background load | ~2-5s | Non-blocking |
-| Scroll | <50ms | Debounced |
-| Cursor move | <10ms | Header update |
-| Old commit highlight | <30ms | Visible area only |
-| Theme change | <200ms | Color recalc |
-| Memory | ~1-2MB | Per buffer |
-
-** Comparison
-
-| Feature | blame-reveal | git-gutter+ | blamer.el |
-|---------|--------------|-------------|-----------|
-| Viewport rendering | ✓ | ✗ | ✗ |
-| Incremental loading | ✓ | ✗ | ✗ |
-| Large files (10k+) | ✓ | ~ | ✗ |
-| IDEA-style colors | ✓ | ✗ | ~ |
-| Interactive commands | ✓ | ✗ | ✓ |
-| Magit integration | ✓ | ✗ | ✗ |
 
 ** Tips
 
-These presets provide sensible defaults depending on project activity and file size.
+*** Project-Specific Presets
 
-*Active projects* (many commits/day):
 #+begin_src elisp
+;; Active projects (many commits/day)
 (setq blame-reveal-recent-days-limit 7
       blame-reveal-auto-expand-recent t)
-#+end_src
 
-*Inactive projects*:
-#+begin_src elisp
+;; Inactive projects
 (setq blame-reveal-recent-days-limit nil
       blame-reveal-recent-commit-count 10)
+
+;; Large files
+(setq blame-reveal-render-margin 100
+      blame-reveal-lazy-load-threshold 3000)
 #+end_src
 
-*Large files, fast scrolling*:
-#+begin_src elisp
-(setq blame-reveal-render-margin 100)
+*** Recursive Blame Workflow
+
+#+begin_src
+Finding original author:
+  1. Navigate to line → Press 'b' repeatedly
+  2. Stop at original implementation → Press 'r' to reset
+
+Tracking bug introduction:
+  1. Find buggy line → Press 'b' until bug disappears
+  2. Last commit with bug is the culprit
+
+Exploring refactoring:
+  1. Find refactored code → Press 'b' to see before
+  2. Press 'g' to jump to specific version
 #+end_src
+
+** Comparison
+
+| Feature            | blame-reveal | git-gutter+ | blamer.el |
+|--------------------+--------------+-------------+-----------|
+| Viewport rendering | ✓           | ✗           | ✗         |
+| Lazy loading       | ✓           | ✗           | ✗         |
+| Large files (10k+) | ✓           | ~           | ✗         |
+| IDEA-style colors  | ✓           | ✗           | ~         |
+| Recursive blame    | ✓           | ✗           | ✗         |
+| Magit integration  | ✓           | ✗           | ✗         |
 
 ** Requirements
 
