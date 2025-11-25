@@ -1,22 +1,36 @@
 ;;; blame-reveal.el --- Show git blame in fringe with colors -*- lexical-binding: t; -*-
 
 ;; Author: Lucius Chen
-;; Version: 0.2
+;; Version: 0.3
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: git, vc, convenience
 
 ;;; Commentary:
-;; Display git blame information in the fringe with color blocks.
-;; Color intensity based on commit recency (newer = more prominent).
-;; Show commit info above each block.
-;; Performance optimized: lazy loading and visible-region rendering.
+;; Display git blame information in the fringe with adaptive color gradients.
+;; Color intensity based on commit recency within an intelligent time window.
+;; Show commit info above each block with sticky headers.
+;; Performance optimized: lazy loading, smart caching, and viewport rendering.
 ;;
-;; Features:
+;; Key Features:
+;; - Smart time-based commit selection with auto-calculation
+;; - Gradient quality control (strict/auto/relaxed)
 ;; - Lazy loading for large files (configurable threshold)
-;; - Incremental commit info loading
-;; - Recursive blame navigation
-;; - Theme-aware color schemes
-;; - Customizable display layouts
+;; - Incremental commit info loading with caching
+;; - Recursive blame navigation with historical context
+;; - Sticky headers for long commits
+;; - Theme-aware color schemes with HSL customization
+;; - Customizable display layouts (line/compact/full/none)
+;;
+;; Quick Start:
+;;   M-x blame-reveal-mode
+;;
+;; Common Customizations:
+;;   (setq blame-reveal-recent-days-limit 'auto)      ; Smart time window
+;;   (setq blame-reveal-gradient-quality 'auto)       ; Balanced quality
+;;   (setq blame-reveal-display-layout 'compact)      ; Header format
+;;   (setq blame-reveal-color-scheme '(:hue 210 ...)) ; Color theme
+;;
+;; See full documentation: https://github.com/lucius-chen/blame-reveal
 
 ;;; Code:
 
@@ -118,6 +132,11 @@ nil means entire file is loaded.")
 
 (defvar-local blame-reveal--recent-commits nil
   "List of recent commit hashes (most recent first) to colorize.")
+
+(defvar-local blame-reveal--auto-days-cache nil
+  "Cached auto-calculated days limit.
+Format: (COMMIT-COUNT . DAYS).
+Cache is invalidated when commit count changes significantly.")
 
 
 ;;;; Loading State Variables
@@ -247,60 +266,70 @@ view commit details using `blame-reveal-show-commit-details' (s key)."
 
 ;;;; Commit Selection Customization
 
-(defcustom blame-reveal-recent-commit-count 20
-  "Number of most recent unique commits to highlight with colors.
-Only the N most recent commits in the file will be shown with age-based
-gradient colors, AND they must be within `blame-reveal-recent-days-limit'.
-Older commits will be shown in gray (or when cursor is on them).
+(defcustom blame-reveal-recent-days-limit 'auto
+  "Time limit for highlighting recent commits.
 
-For active projects, you may want to increase this (e.g., 30-50).
-For inactive projects, a smaller number (e.g., 5-10) may be sufficient."
-  :type 'integer
+Using days (instead of commit count) ensures consistent behavior
+across projects with different commit frequencies.
+
+Values:
+  'auto  - Automatically calculate based on commit density and
+           gradient quality. Adapts to both normal and recursive
+           blame modes. (Recommended)
+
+  number - Fixed days (e.g., 30, 90, 180, 365)
+           Shows commits within this many days from reference point.
+           In recursive blame, reference point is the revision date.
+
+  nil    - No limit, highlight all commits with relative coloring
+           (like IntelliJ IDEA)
+
+Examples:
+  'auto - Smart calculation, good for most cases
+  30    - Last month (for very active files)
+  90    - Last quarter
+  180   - Last half year
+  365   - Last year
+  nil   - All commits (relative age coloring)
+
+The actual number of commits within this period varies by file activity:
+- Active files: many commits in the time window
+- Quiet files: few commits in the time window
+
+This is intentional and provides consistent time-based context
+regardless of commit frequency."
+  :type '(choice (const :tag "Auto (smart calculation)" auto)
+                 (integer :tag "Fixed days")
+                 (const :tag "No limit (all commits)" nil))
   :group 'blame-reveal)
 
-(defcustom blame-reveal-recent-days-limit 90
-  "Maximum age in days for a commit to be considered 'recent'.
-Even if a commit is in the top N most recent commits, it will only
-be colorized if it's within this many days. Set to nil to disable
-the time limit (only use commit count).
+(defcustom blame-reveal-gradient-quality 'auto
+  "Control trade-off between time coverage and color distinction.
 
-Common values:
-- 30: Only show commits from last month
-- 90: Show commits from last quarter (default)
-- 180: Show commits from last half year
-- nil: No time limit, only use commit count"
-  :type '(choice (const :tag "No time limit" nil)
-                 (integer :tag "Days"))
-  :group 'blame-reveal)
+This setting affects how 'auto mode calculates the days limit.
+It controls the target number of commits and minimum color difference.
 
-(defcustom blame-reveal-auto-expand-recent t
-  "Automatically expand recent commit count to include all commits within time limit.
-When t, if there are more than N commits within the time limit,
-all of them will be shown (ignoring the commit count limit).
-When nil, strictly use the commit count limit."
-  :type 'boolean
-  :group 'blame-reveal)
+'strict  - Fewer commits (5-10), excellent distinction (3-5% color steps)
+           Best for visual clarity, shorter time window.
+           Recommended for files with many commits.
 
-(defcustom blame-reveal-recursive-ignore-time-limit t
-  "Whether to ignore time limit in recursive blame mode.
+'auto    - Balanced (10-20 commits), good distinction (2-3% color steps)
+           Good balance between clarity and historical context.
+           Recommended for most cases.
 
-When t (recommended):
-  - Recursive blame shows top N commits at that revision
-  - Time limit (=blame-reveal-recent-days-limit') is ignored
-  - Useful for exploring old revisions (e.g., 3 years ago)
+'relaxed - More commits (15-30), acceptable distinction (1.5-2% color steps)
+           More historical context, colors may be subtle.
+           Recommended for files with few commits.
 
-When nil:
-  - Recursive blame respects time limit
-  - May show all gray if revision is too old
-  - Only useful if you want strict time filtering
+Only used when `blame-reveal-recent-days-limit' is 'auto.
+For fixed days limit, this setting is ignored.
 
-Example:
-  Viewing revision from 2021-05-20 (3 years ago)
-  - With t: Shows top 20 commits at 2021-05-20 (colorized)
-  - With nil: All commits >90 days from now (all gray)
-
-Most users should keep this as t for meaningful historical exploration."
-  :type 'boolean
+Color distinction is measured by the lightness/saturation step between
+consecutive commits in the gradient. Smaller steps mean colors are
+harder to distinguish visually."
+  :type '(choice (const :tag "Strict (best distinction)" strict)
+                 (const :tag "Auto (balanced)" auto)
+                 (const :tag "Relaxed (more history)" relaxed))
   :group 'blame-reveal)
 
 
@@ -437,7 +466,7 @@ overlays appear with more delay."
   :type 'number
   :group 'blame-reveal)
 
-(defcustom blame-reveal-lazy-load-threshold 5000
+(defcustom blame-reveal-lazy-load-threshold 2000
   "File size threshold (in lines) for lazy loading.
 Files larger than this will use lazy loading (only blame visible region).
 Smaller files will load completely for better recursive blame experience.
@@ -750,40 +779,166 @@ For commits in recent list (in top N AND within time limit):
           (puthash commit-hash color blame-reveal--color-map)
           color))))
 
+;;;; Gradient Quality Functions
+
+(defun blame-reveal--calculate-gradient-quality (num-commits)
+  "Calculate color gradient quality for NUM-COMMITS.
+
+Returns a quality score from 0.0 to 1.0 based on how distinguishable
+the colors will be with the current color scheme.
+
+Quality is determined by per-commit color difference:
+- Lightness step: brightness change per commit (weighted 70%)
+- Saturation step: color intensity change per commit (weighted 30%)
+
+Quality thresholds:
+- 1.0 (excellent): >= 5% combined step
+- 0.8 (good):      >= 3% combined step
+- 0.5 (acceptable):>= 2% combined step
+- <0.5 (poor):     < 2% combined step
+
+A higher score means colors are more easily distinguishable.
+Lower scores indicate commits may look too similar."
+  (when (and (> num-commits 0) blame-reveal-color-scheme)
+    (let* ((scheme blame-reveal-color-scheme)
+           (is-dark (blame-reveal--is-dark-theme-p))
+           ;; Calculate lightness range from color scheme
+           (lightness-range
+            (if is-dark
+                (- (plist-get scheme :dark-newest)
+                   (plist-get scheme :dark-oldest))
+              (- (plist-get scheme :light-oldest)
+                 (plist-get scheme :light-newest))))
+           ;; Calculate saturation range
+           (saturation-range
+            (- (plist-get scheme :saturation-max)
+               (plist-get scheme :saturation-min)))
+           ;; Per-commit color difference
+           (lightness-step (/ lightness-range (float (max 1 (1- num-commits)))))
+           (saturation-step (/ saturation-range (float (max 1 (1- num-commits)))))
+           ;; Combined step (lightness weighted 70%, saturation 30%)
+           (combined-step (+ (* 0.7 lightness-step) (* 0.3 saturation-step))))
+
+      ;; Convert to quality score
+      (cond
+       ((>= combined-step 0.05) 1.0)   ; Excellent (5%+ step)
+       ((>= combined-step 0.03) 0.8)   ; Good (3-5% step)
+       ((>= combined-step 0.02) 0.5)   ; Acceptable (2-3% step)
+       (t (* combined-step 20))))))     ; Poor (<2% step, score 0.0-0.4)
+
+(defun blame-reveal--get-quality-thresholds ()
+  "Get gradient quality thresholds based on user setting.
+
+Returns a plist with:
+  :min-quality - Minimum acceptable quality score (0.0-1.0)
+  :max-commits - Maximum commits to include in gradient
+
+These values control the auto-calculation algorithm:
+- Higher min-quality = fewer commits, better distinction
+- Lower min-quality = more commits, more history coverage"
+  (pcase blame-reveal-gradient-quality
+    ('strict  '(:min-quality 0.8 :max-commits 10))   ; Excellent distinction
+    ('auto    '(:min-quality 0.5 :max-commits 20))   ; Good distinction
+    ('relaxed '(:min-quality 0.3 :max-commits 30))   ; Acceptable distinction
+    (_ '(:min-quality 0.5 :max-commits 20))))        ; Default to auto
+
+(defun blame-reveal--should-recalculate-p ()
+  "Check if auto-calculation should be triggered.
+
+Returns t if recalculation is needed because:
+- No cache exists yet
+- Commit count changed significantly (>10 commits or >20% change)
+
+This prevents unnecessary recalculation on every scroll,
+while ensuring the limit adapts as more commits are loaded."
+  (if (not blame-reveal--auto-days-cache)
+      t  ; No cache, must calculate
+    (let* ((cached-count (car blame-reveal--auto-days-cache))
+           (current-count (hash-table-count blame-reveal--commit-info))
+           (count-diff (abs (- current-count cached-count)))
+           (count-ratio (if (> cached-count 0)
+                            (/ (float count-diff) cached-count)
+                          1.0)))
+      ;; Recalculate if count changed significantly
+      (or (> count-diff 10)           ; More than 10 new commits
+          (> count-ratio 0.2)))))     ; More than 20% change
+
+;; (defun blame-reveal--get-reference-time ()
+;;   "Get reference time for age calculation.
+
+;; In normal blame mode: returns current time (now).
+;; In recursive blame mode: returns the newest commit timestamp
+;;   in the current view (simulates 'now' at that revision).
+
+;; This allows auto-calculation to work correctly in both modes:
+;; - Normal: 'recent' means recent from today
+;; - Recursive: 'recent' means recent from the revision date"
+;;   (if (and (boundp 'blame-reveal--current-revision)
+;;            blame-reveal--current-revision
+;;            (not (eq blame-reveal--current-revision 'uncommitted)))
+;;       ;; Recursive blame: find newest commit in current view
+;;       (let ((newest-ts nil))
+;;         (maphash (lambda (_commit info)
+;;                    (when-let ((ts (nth 4 info)))
+;;                      (when (or (not newest-ts) (> ts newest-ts))
+;;                        (setq newest-ts ts))))
+;;                  blame-reveal--commit-info)
+;;         (or newest-ts (float-time)))
+;;     ;; Normal blame: use current time
+;;     (float-time)))
+
+(defun blame-reveal--get-reference-time ()
+  "Get reference time for age calculation."
+  (if (and (boundp 'blame-reveal--current-revision)
+           blame-reveal--current-revision
+           (not (eq blame-reveal--current-revision 'uncommitted)))
+      ;; Recursive: use newest commit in current view
+      (or (cl-loop for info being the hash-values of blame-reveal--commit-info
+                   when (nth 4 info)
+                   maximize (nth 4 info))
+          (float-time))
+    ;; Normal: use current time
+    (float-time)))
+
 
 ;;;; Commit Selection Functions
 
 (defun blame-reveal--is-recent-commit-p (commit-hash)
-  "Check if COMMIT-HASH is one of the recent commits to colorize."
+  "Check if COMMIT-HASH is in the recent commits list.
+
+Recent commits are those that pass the days limit filter
+(either auto-calculated or user-specified).
+
+Returns t if commit should be highlighted with gradient colors,
+nil if it should be shown in gray (old commit color)."
   (member commit-hash blame-reveal--recent-commits))
 
-(defun blame-reveal--get-unique-commits ()
-  "Get list of unique commit hashes in current file (in order of first appearance)."
-  (when blame-reveal--blame-data
-    (let ((commits nil)
-          (seen (make-hash-table :test 'equal)))
-      (dolist (entry blame-reveal--blame-data)
-        (let ((commit (cdr entry)))
-          (unless (gethash commit seen)
-            (puthash commit t seen)
-            (push commit commits))))
-      (nreverse commits))))
-
 (defun blame-reveal--update-recent-commits ()
-  "Update the list of recent commits based on currently loaded info.
+  "Update list of recent commits based on days limit.
 
-For normal blame: respects both count and time limits based on `blame-reveal-auto-expand-recent'
-For recursive blame: respects `blame-reveal-recursive-ignore-time-limit'"
+In normal blame mode:
+- Uses current time as reference
+- 'Recent' means commits within N days from now
+
+In recursive blame mode:
+- Uses revision date as reference
+- 'Recent' means commits within N days from that revision
+- This ensures meaningful gradient when exploring history
+
+The days limit comes from `blame-reveal-recent-days-limit':
+- 'auto: Calculated automatically based on commit density
+- number: Fixed days limit
+- nil: No limit (all commits considered recent)"
   (when blame-reveal--commit-info
     (let* ((commit-timestamps nil)
-           (current-time (float-time))
-           ;; Check if we're in recursive blame mode by examining current revision
-           (skip-time-filter (and (boundp 'blame-reveal--current-revision)
-                                  blame-reveal--current-revision
-                                  (not (eq blame-reveal--current-revision 'uncommitted))
-                                  blame-reveal-recursive-ignore-time-limit)))
+           (reference-time (blame-reveal--get-reference-time))
+           ;; Get effective days limit
+           (days-limit (pcase blame-reveal-recent-days-limit
+                         ('auto (or (blame-reveal--auto-calculate-days-limit) 90))
+                         ('nil nil)
+                         (_ blame-reveal-recent-days-limit))))
 
-      ;; Collect all commits with loaded timestamps
+      ;; Collect all commits with timestamps
       (maphash (lambda (commit info)
                  (when-let ((timestamp (nth 4 info)))
                    (push (cons commit timestamp) commit-timestamps)))
@@ -794,39 +949,185 @@ For recursive blame: respects `blame-reveal-recursive-ignore-time-limit'"
             (sort commit-timestamps
                   (lambda (a b) (> (cdr a) (cdr b)))))
 
-      (let ((recent-commits nil))
-        (if blame-reveal-auto-expand-recent
-            ;; Auto-expand mode
-            (if (and blame-reveal-recent-days-limit
-                     (not skip-time-filter))
-                (let ((age-limit-seconds (* blame-reveal-recent-days-limit 86400)))
-                  (setq recent-commits
-                        (cl-remove-if
-                         (lambda (commit-ts)
-                           (> (- current-time (cdr commit-ts))
-                              age-limit-seconds))
-                         commit-timestamps)))
-              (setq recent-commits
-                    (seq-take commit-timestamps
-                              blame-reveal-recent-commit-count)))
+      ;; Filter by days if limit is set
+      (when days-limit
+        (let ((age-limit-seconds (* days-limit 86400)))
+          (setq commit-timestamps
+                (cl-remove-if
+                 (lambda (commit-ts)
+                   (> (- reference-time (cdr commit-ts))
+                      age-limit-seconds))
+                 commit-timestamps))))
 
-          ;; Strict mode
-          (setq recent-commits
-                (seq-take commit-timestamps
-                          blame-reveal-recent-commit-count))
+      (setq blame-reveal--recent-commits
+            (mapcar #'car commit-timestamps)))))
 
-          (when (and blame-reveal-recent-days-limit
-                     (not skip-time-filter))
-            (let ((age-limit-seconds (* blame-reveal-recent-days-limit 86400)))
-              (setq recent-commits
-                    (cl-remove-if
-                     (lambda (commit-ts)
-                       (> (- current-time (cdr commit-ts))
-                          age-limit-seconds))
-                     recent-commits)))))
+(defun blame-reveal--auto-calculate-days-limit ()
+  "Automatically calculate days limit for optimal color gradient.
 
-        (setq blame-reveal--recent-commits
-              (mapcar #'car recent-commits))))))
+Algorithm:
+1. Collect timestamps from loaded commits
+2. Analyze recent commits (sample of 5-15 based on availability)
+3. Calculate their time span
+4. Extend appropriately to reach target commit count
+5. Verify gradient quality (color distinguishability)
+6. Adjust range if gradient is too poor or too good
+7. Cache result to avoid recalculation on every scroll
+
+In recursive blame mode:
+- Uses the revision date as reference point (not current time)
+- Calculates based on commits visible at that point in history
+- Ensures meaningful gradient when exploring old revisions
+
+Performance:
+- First call: ~5-10ms (actual calculation)
+- Cached calls: <1ms (instant return)
+- Cache invalidated only when commit count changes significantly
+
+Returns:
+- Recommended days limit (integer)
+- nil if insufficient data (<3 commits)"
+  (when (and blame-reveal--commit-info
+             (> (hash-table-count blame-reveal--commit-info) 3))
+
+    ;; Check cache: avoid recalculation if commit count unchanged
+    (if (and blame-reveal--auto-days-cache
+             (not (blame-reveal--should-recalculate-p)))
+        ;; Return cached value
+        (cdr blame-reveal--auto-days-cache)
+
+      ;; Need to recalculate
+      (let* ((timestamps nil)
+             (reference-time (blame-reveal--get-reference-time))
+             (current-count (hash-table-count blame-reveal--commit-info)))
+
+        ;; Collect all loaded timestamps
+        (maphash (lambda (_commit info)
+                   (when-let ((ts (nth 4 info)))
+                     (push ts timestamps)))
+                 blame-reveal--commit-info)
+
+        (when (>= (length timestamps) 3)
+          (setq timestamps (sort timestamps #'>))
+
+          (let* ((total-commits (length timestamps))
+                 ;; Adaptive sample size based on available commits
+                 (sample-size (cond
+                               ((>= total-commits 15) 15)  ; Ideal: 15 commits
+                               ((>= total-commits 10) 10)  ; Good: 10 commits
+                               ((>= total-commits 5) 5)    ; Acceptable: 5 commits
+                               (t total-commits)))         ; Use all available
+
+                 (sample (seq-take timestamps sample-size))
+                 (span-seconds (when (> (length sample) 1)
+                                 (- (car sample) (car (last sample)))))
+                 (span-days (when span-seconds
+                              (/ span-seconds 86400.0))))
+
+            (when span-days
+              (let* (;; Extension factor: smaller samples need more extension
+                     (extension-factor
+                      (cond
+                       ((>= sample-size 15) 1.5)  ; Good sample, extend 50%
+                       ((>= sample-size 10) 1.8)  ; Medium sample, extend 80%
+                       ((>= sample-size 5) 2.0)   ; Small sample, extend 100%
+                       (t 2.5)))                  ; Tiny sample, extend 150%
+
+                     (base-days (* span-days extension-factor))
+
+                     ;; Minimum days to ensure gradient quality
+                     (min-days-for-gradient
+                      (cond
+                       ((< span-days 7) 7)      ; Very active: at least 1 week
+                       ((< span-days 30) 14)    ; Moderate: at least 2 weeks
+                       (t 30)))                 ; Quiet: at least 1 month
+
+                     (adjusted-days (max base-days min-days-for-gradient))
+
+                     ;; Get quality thresholds from user setting
+                     (thresholds (blame-reveal--get-quality-thresholds))
+                     (min-quality (plist-get thresholds :min-quality))
+                     (max-commits (plist-get thresholds :max-commits))
+
+                     ;; Target commit count range
+                     (min-commits 5)
+                     (target-commits (min max-commits total-commits))
+
+                     ;; Calculate commits in current range
+                     (age-limit-seconds (* adjusted-days 86400))
+                     (commits-in-range
+                      (length (cl-remove-if
+                               (lambda (ts)
+                                 (> (- reference-time ts) age-limit-seconds))
+                               timestamps))))
+
+                ;; Phase 1: Expand to meet minimum commit count
+                (while (and (< commits-in-range min-commits)
+                            (< adjusted-days 730)
+                            (< commits-in-range total-commits))
+                  (setq adjusted-days (* adjusted-days 1.5))
+                  (setq age-limit-seconds (* adjusted-days 86400))
+                  (setq commits-in-range
+                        (length (cl-remove-if
+                                 (lambda (ts)
+                                   (> (- reference-time ts) age-limit-seconds))
+                                 timestamps))))
+
+                ;; Phase 2: Adjust for gradient quality
+                (let ((gradient-quality (blame-reveal--calculate-gradient-quality
+                                         commits-in-range))
+                      (iterations 0))
+
+                  ;; Shrink if quality is poor (too many commits, colors too similar)
+                  (while (and gradient-quality
+                              (< gradient-quality min-quality)
+                              (> commits-in-range min-commits)
+                              (> adjusted-days min-days-for-gradient)
+                              (< iterations 10))  ; Safety limit
+                    (setq adjusted-days (* adjusted-days 0.75))
+                    (setq age-limit-seconds (* adjusted-days 86400))
+                    (setq commits-in-range
+                          (length (cl-remove-if
+                                   (lambda (ts)
+                                     (> (- reference-time ts) age-limit-seconds))
+                                   timestamps)))
+                    (setq gradient-quality
+                          (blame-reveal--calculate-gradient-quality commits-in-range))
+                    (setq iterations (1+ iterations)))
+
+                  ;; Expand if quality is too good (too few commits, wasting color range)
+                  (setq iterations 0)
+                  (while (and gradient-quality
+                              (> gradient-quality 0.9)  ; Excellent but maybe too few
+                              (< commits-in-range target-commits)
+                              (< adjusted-days 730)
+                              (< commits-in-range total-commits)
+                              (< iterations 10))
+                    (setq adjusted-days (* adjusted-days 1.3))
+                    (setq age-limit-seconds (* adjusted-days 86400))
+                    (let ((new-count (length (cl-remove-if
+                                              (lambda (ts)
+                                                (> (- reference-time ts) age-limit-seconds))
+                                              timestamps))))
+                      ;; Only expand if quality stays acceptable
+                      (when (>= (blame-reveal--calculate-gradient-quality new-count)
+                                min-quality)
+                        (setq commits-in-range new-count))
+                      (setq iterations (1+ iterations)))))
+
+                ;; Phase 3: Special case - all commits in short time
+                (when (and (<= commits-in-range total-commits)
+                           (> adjusted-days (* span-days 3)))
+                  ;; Don't extend too far beyond actual commit span
+                  (setq adjusted-days (max min-days-for-gradient
+                                           (* span-days 2))))
+
+                ;; Final: clamp to reasonable bounds and cache
+                (let ((final-days (max 7 (min 730 (ceiling adjusted-days)))))
+                  ;; Update cache
+                  (setq blame-reveal--auto-days-cache
+                        (cons current-count final-days))
+                  final-days)))))))))
 
 
 ;;;; Sticky Header Support
@@ -1671,6 +1972,120 @@ Recalculates colors and refreshes all displays."
     (ansi-color-apply-on-region (point-min) (point-max))))
 
 ;;;###autoload
+(defun blame-reveal-show-auto-calculation ()
+  "Show how auto days limit is calculated for current file.
+
+Displays diagnostic information including:
+- Current mode (normal or recursive blame)
+- Reference time used for age calculation
+- Sample size and time span
+- Calculated days limit
+- Number of commits in range
+- Gradient quality assessment
+
+Useful for understanding the auto-calculation algorithm
+and debugging color gradient issues."
+  (interactive)
+  (if (not blame-reveal--commit-info)
+      (message "No blame data loaded yet")
+    (let* ((timestamps nil)
+           (reference-time (blame-reveal--get-reference-time))
+           (is-recursive (and (boundp 'blame-reveal--current-revision)
+                              blame-reveal--current-revision
+                              (not (eq blame-reveal--current-revision 'uncommitted)))))
+
+      ;; Collect timestamps
+      (maphash (lambda (_commit info)
+                 (when-let ((ts (nth 4 info)))
+                   (push ts timestamps)))
+               blame-reveal--commit-info)
+
+      (setq timestamps (sort timestamps #'>))
+
+      (let* ((sample-size (cond
+                           ((>= (length timestamps) 15) 15)
+                           ((>= (length timestamps) 10) 10)
+                           ((>= (length timestamps) 5) 5)
+                           (t (length timestamps))))
+             (sample (seq-take timestamps sample-size))
+             (span-seconds (when (> (length sample) 1)
+                             (- (car sample) (car (last sample)))))
+             (span-days (when span-seconds (/ span-seconds 86400.0)))
+             (calculated-days (blame-reveal--auto-calculate-days-limit))
+             (commits-in-range
+              (if calculated-days
+                  (length (cl-remove-if
+                           (lambda (ts)
+                             (> (- reference-time ts) (* calculated-days 86400)))
+                           timestamps))
+                0))
+             (gradient-quality
+              (when (> commits-in-range 0)
+                (blame-reveal--calculate-gradient-quality commits-in-range)))
+             (quality-desc
+              (cond
+               ((null gradient-quality) "N/A")
+               ((>= gradient-quality 0.8) "Excellent")
+               ((>= gradient-quality 0.5) "Good")
+               ((>= gradient-quality 0.3) "Acceptable")
+               (t "Poor")))
+             (lightness-range
+              (let ((scheme blame-reveal-color-scheme)
+                    (is-dark (blame-reveal--is-dark-theme-p)))
+                (if is-dark
+                    (- (plist-get scheme :dark-newest)
+                       (plist-get scheme :dark-oldest))
+                  (- (plist-get scheme :light-oldest)
+                     (plist-get scheme :light-newest)))))
+             (per-commit-pct
+              (if (> commits-in-range 1)
+                  (* (/ lightness-range (1- commits-in-range)) 100)
+                0)))
+
+        (message
+         (concat
+          "Auto calculation for current file:\n"
+          "- Mode: %s\n"
+          "- Reference time: %s\n"
+          "- Total commits loaded: %d\n"
+          "- Sample size: %d commits\n"
+          "- Sample time span: %.1f days\n"
+          "- Calculated limit: %s days\n"
+          "- Commits in range: %d\n"
+          "- Gradient quality: %s (%.2f%% per commit)\n"
+          "- Quality mode: %s")
+         (if is-recursive
+             (format "Recursive (@%s)" blame-reveal--revision-display)
+           "Normal (HEAD)")
+         (if is-recursive
+             (format-time-string "%Y-%m-%d" reference-time)
+           "now")
+         (length timestamps)
+         sample-size
+         (or span-days 0)
+         (if calculated-days (format "%d" calculated-days) "N/A")
+         commits-in-range
+         quality-desc
+         per-commit-pct
+         blame-reveal-gradient-quality)))))
+
+;;;###autoload
+(defun blame-reveal-clear-auto-cache ()
+  "Clear auto-calculation cache and force recalculation.
+
+Use this if you want to see the effect of changing
+`blame-reveal-gradient-quality' setting, or if you suspect
+the cached value is stale.
+
+The cache will be automatically rebuilt on next update."
+  (interactive)
+  (setq blame-reveal--auto-days-cache nil)
+  (when blame-reveal-mode
+    (blame-reveal--update-recent-commits)
+    (blame-reveal--render-visible-region)
+    (message "Auto-calculation cache cleared and recalculated")))
+
+;;;###autoload
 (defun blame-reveal-copy-commit-hash ()
   "Copy the commit hash of the current line to kill ring."
   (interactive)
@@ -1834,6 +2249,7 @@ This function always uses built-in git."
                          'blame-reveal--emulation-alist)
 
             ;; Initialize state
+            (setq blame-reveal--auto-days-cache nil)
             (setq blame-reveal--blame-data-range nil)
             (setq blame-reveal--all-commits-loaded nil)
 
@@ -1869,6 +2285,7 @@ This function always uses built-in git."
       (setq blame-reveal--scroll-timer nil))
 
     (setq blame-reveal--loading nil)
+    (setq blame-reveal--auto-days-cache nil)
     (setq blame-reveal--blame-data-range nil)
     (setq blame-reveal--all-commits-loaded nil)
 

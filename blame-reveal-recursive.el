@@ -252,6 +252,7 @@ REVISION can be:
     (setq blame-reveal--blame-stack nil)
     (setq blame-reveal--current-revision nil)
     (setq blame-reveal--revision-display nil)
+    (setq blame-reveal--auto-days-cache nil)
     (blame-reveal--full-update)
     (message "Reset to HEAD")))
 
