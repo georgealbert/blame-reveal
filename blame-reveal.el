@@ -2456,7 +2456,9 @@ Commit info will be loaded later when cursor stops moving."
                      blame-reveal--is-expanding)
           ;; Render visible region with whatever data we have
           (blame-reveal--render-visible-region)
-          (blame-reveal--update-sticky-header))))))
+          ;; Only update sticky header if layout is not 'none
+          (unless (eq blame-reveal-display-layout 'none)
+            (blame-reveal--update-sticky-header)))))))
 
 (defun blame-reveal--on-scroll ()
   "Handle scroll event with debouncing.
