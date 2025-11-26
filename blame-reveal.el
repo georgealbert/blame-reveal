@@ -89,6 +89,10 @@
 (defvar blame-reveal--scroll-timer nil
   "Timer to debounce scroll updates.")
 
+(defvar blame-reveal--scroll-render-delay 0.3
+  "Internal delay before rendering overlays after scrolling stops.
+This is an implementation detail and should not be customized by users.")
+
 
 ;;;; Buffer-Local State Variables
 
@@ -109,6 +113,18 @@
 
 (defvar-local blame-reveal--sticky-header-overlay nil
   "Overlay for sticky header at window top.")
+
+(defvar-local blame-reveal--temp-overlay-timer nil
+  "Timer for delayed temp overlay rendering.")
+
+(defvar-local blame-reveal--header-update-timer nil
+  "Timer for delayed header update.")
+
+(defvar-local blame-reveal--last-rendered-commit nil
+  "Commit hash of the last rendered block (for smooth transition).")
+
+(defvar-local blame-reveal--current-block-commit nil
+  "Commit hash of the currently highlighted block.")
 
 
 ;;;; Data Cache Variables
@@ -718,7 +734,7 @@ The color is derived from the color scheme to be:
                             (+ oldest (* (- 1.0 oldest) 0.5))))))  ; 50% towards white
         (blame-reveal--hsl-to-hex hue saturation lightness))))
 
-(defun blame-reveal--is-uncommitted-p (commit-hash)
+(defsubst blame-reveal--is-uncommitted-p (commit-hash)
   "Check if COMMIT-HASH represents uncommitted changes."
   (string-match-p "^0+$" commit-hash))
 
@@ -778,6 +794,23 @@ For commits in recent list (in top N AND within time limit):
                         (blame-reveal--get-fallback-color))))
           (puthash commit-hash color blame-reveal--color-map)
           color))))
+
+(defun blame-reveal--get-commit-display-info (commit-hash)
+  "Get display info for COMMIT-HASH.
+Returns (COLOR IS-UNCOMMITTED IS-OLD-COMMIT HIDE-FRINGE).
+This is a convenience function for common display logic."
+  (blame-reveal--ensure-commit-info commit-hash)
+  (let* ((is-uncommitted (blame-reveal--is-uncommitted-p commit-hash))
+         (is-old-commit (and (not is-uncommitted)
+                             (not (blame-reveal--should-render-commit commit-hash))))
+         (color (cond
+                 (is-uncommitted (blame-reveal--get-uncommitted-color))
+                 (is-old-commit (blame-reveal--get-old-commit-color))
+                 (t (blame-reveal--get-commit-color commit-hash))))
+         (hide-fringe (and is-uncommitted
+                           (not blame-reveal-show-uncommitted-fringe))))
+    (list color is-uncommitted is-old-commit hide-fringe)))
+
 
 ;;;; Gradient Quality Functions
 
@@ -1135,12 +1168,10 @@ Returns t if ANY part of the header is visible in window."
 (defun blame-reveal--find-block-for-commit (commit-hash block-start-line)
   "Find block info for COMMIT-HASH starting at BLOCK-START-LINE.
 Returns the block from blame-reveal--blame-data, or nil if not found."
-  (catch 'found
-    (dolist (block (blame-reveal--find-block-boundaries blame-reveal--blame-data))
-      (when (and (= (nth 0 block) block-start-line)
-                 (equal (nth 1 block) commit-hash))
-        (throw 'found block)))
-    nil))
+  (cl-loop for block in (blame-reveal--find-block-boundaries blame-reveal--blame-data)
+           when (and (= (nth 0 block) block-start-line)
+                     (equal (nth 1 block) commit-hash))
+           return block))
 
 (defun blame-reveal--should-show-sticky-header-p (commit-hash block-start-line current-line)
   "Determine if sticky header should be shown.
@@ -1663,30 +1694,23 @@ Use lazy loading for large files, full loading for small files."
 
 (defun blame-reveal--get-current-block ()
   "Get the commit hash and start line of block at current line."
-  (let ((line-num (line-number-at-pos))
-        (overlays (overlays-at (point))))
-    (catch 'found
-      (dolist (ov overlays)
-        (when-let ((commit (overlay-get ov 'blame-reveal-commit)))
-          (dolist (block (blame-reveal--find-block-boundaries
-                          blame-reveal--blame-data))
-            (let ((block-start (nth 0 block))
-                  (block-commit (nth 1 block))
-                  (block-length (nth 2 block)))
-              (when (and (equal commit block-commit)
-                         (>= line-num block-start)
-                         (< line-num (+ block-start block-length)))
-                (throw 'found (cons commit block-start)))))))
-
-      (dolist (block (blame-reveal--find-block-boundaries
-                      blame-reveal--blame-data))
-        (let ((block-start (nth 0 block))
-              (block-commit (nth 1 block))
-              (block-length (nth 2 block)))
-          (when (and (>= line-num block-start)
-                     (< line-num (+ block-start block-length)))
-            (throw 'found (cons block-commit block-start)))))
-      nil)))
+  (let ((line-num (line-number-at-pos)))
+    ;; First try from overlays (faster)
+    (or (cl-loop for ov in (overlays-at (point))
+                 for commit = (overlay-get ov 'blame-reveal-commit)
+                 when commit
+                 return (cl-loop for block in (blame-reveal--find-block-boundaries
+                                               blame-reveal--blame-data)
+                                 when (and (equal commit (nth 1 block))
+                                           (>= line-num (nth 0 block))
+                                           (< line-num (+ (nth 0 block) (nth 2 block))))
+                                 return (cons commit (nth 0 block))))
+        ;; Fallback: search in blame data
+        (cl-loop for block in (blame-reveal--find-block-boundaries
+                               blame-reveal--blame-data)
+                 when (and (>= line-num (nth 0 block))
+                           (< line-num (+ (nth 0 block) (nth 2 block))))
+                 return (cons (nth 1 block) (nth 0 block))))))
 
 (defun blame-reveal--temp-overlay-renderer (buf hash col)
   "Render temporary overlays for old commit HASH with color COL in buffer BUF."
@@ -1714,103 +1738,168 @@ Use lazy loading for large files, full loading for small files."
                         (append temp-ovs
                                 blame-reveal--temp-old-overlays)))))))))))
 
-(defun blame-reveal--update-header ()
-  "Update header display based on current cursor position."
+(defun blame-reveal--clear-temp-overlays-for-commit (commit-hash)
+  "Clear temporary overlays only for specific COMMIT-HASH."
+  (setq blame-reveal--temp-old-overlays
+        (cl-remove-if
+         (lambda (ov)
+           (when (and (overlay-buffer ov)
+                      (equal (overlay-get ov 'blame-reveal-commit) commit-hash))
+             (delete-overlay ov)
+             t))
+         blame-reveal--temp-old-overlays)))
+
+(defun blame-reveal--update-header-impl ()
+  "Implementation of header update."
   (when blame-reveal--blame-data
+    ;; First, ensure visible commits have their info loaded
+    ;; This is where we do the expensive git show operations
+    (blame-reveal--ensure-visible-commits-loaded)
     (let ((current-block (blame-reveal--get-current-block)))
-      (if (and current-block
-               (not (equal (car current-block) blame-reveal--current-block-commit)))
+      (if current-block
           (let* ((commit-hash (car current-block))
-                 (block-start (cdr current-block))
-                 (_ (blame-reveal--ensure-commit-info commit-hash))
-                 (is-uncommitted (blame-reveal--is-uncommitted-p commit-hash))
-                 (is-old-commit (and (not is-uncommitted)
-                                     (not (blame-reveal--should-render-commit commit-hash))))
-                 (color (cond
-                         (is-uncommitted
-                          (blame-reveal--get-uncommitted-color))
-                         (is-old-commit
-                          (blame-reveal--get-old-commit-color))
-                         (t
-                          (blame-reveal--get-commit-color commit-hash))))
-                 (hide-header-fringe (and is-uncommitted
-                                          (not blame-reveal-show-uncommitted-fringe))))
+                 (block-start (cdr current-block)))
 
-            ;; Cancel any pending temp overlay rendering
-            (when blame-reveal--temp-overlay-timer
-              (cancel-timer blame-reveal--temp-overlay-timer)
-              (setq blame-reveal--temp-overlay-timer nil))
+            ;; If entered a new block
+            (unless (equal commit-hash blame-reveal--current-block-commit)
+              ;; Clean up the previous block's overlay (if exists and different)
+              (when (and blame-reveal--last-rendered-commit
+                         (not (equal blame-reveal--last-rendered-commit commit-hash)))
+                (blame-reveal--clear-temp-overlays-for-commit
+                 blame-reveal--last-rendered-commit))
 
-            ;; Clear previous header immediately
-            (when blame-reveal--header-overlay
-              (delete-overlay blame-reveal--header-overlay)
-              (setq blame-reveal--header-overlay nil))
+              ;; Update current block (but don't render yet)
+              (setq blame-reveal--current-block-commit commit-hash))
 
-            ;; Clear previous temp overlays immediately
-            (blame-reveal--clear-temp-overlays)
+            ;; Only render the current block when stopped
+            (pcase-let ((`(,color ,is-uncommitted ,is-old-commit ,hide-header-fringe)
+                         (blame-reveal--get-commit-display-info commit-hash)))
 
-            ;; Update current block commit
-            (setq blame-reveal--current-block-commit commit-hash)
+              ;; Cancel any pending temp overlay rendering
+              (when blame-reveal--temp-overlay-timer
+                (cancel-timer blame-reveal--temp-overlay-timer)
+                (setq blame-reveal--temp-overlay-timer nil))
 
-            ;; Create new header only if layout is not 'none
-            (unless (eq blame-reveal-display-layout 'none)
-              (setq blame-reveal--header-overlay
-                    (blame-reveal--create-header-overlay
-                     block-start commit-hash color hide-header-fringe)))
+              ;; Clear previous header
+              (when blame-reveal--header-overlay
+                (delete-overlay blame-reveal--header-overlay)
+                (setq blame-reveal--header-overlay nil))
 
-            ;; Show temp fringe overlay for old commits or uncommitted changes
-            (when (or is-old-commit
-                      (and is-uncommitted blame-reveal-show-uncommitted-fringe))
-              (setq blame-reveal--temp-overlay-timer
-                    (run-with-idle-timer
-                     blame-reveal-temp-overlay-delay nil
-                     #'blame-reveal--temp-overlay-renderer
-                     (current-buffer) commit-hash color))))
+              ;; Create new header only if layout is not 'none
+              (unless (eq blame-reveal-display-layout 'none)
+                (setq blame-reveal--header-overlay
+                      (blame-reveal--create-header-overlay
+                       block-start commit-hash color hide-header-fringe)))
 
-        ;; No current block or moved away
-        (unless current-block
-          (when blame-reveal--temp-overlay-timer
-            (cancel-timer blame-reveal--temp-overlay-timer)
-            (setq blame-reveal--temp-overlay-timer nil))
-          (when blame-reveal--header-overlay
-            (delete-overlay blame-reveal--header-overlay)
-            (setq blame-reveal--header-overlay nil))
-          (blame-reveal--clear-temp-overlays)
-          (setq blame-reveal--current-block-commit nil)))
+              ;; Show temp fringe overlay for old commits or uncommitted changes
+              (when (or is-old-commit
+                        (and is-uncommitted blame-reveal-show-uncommitted-fringe))
+                (setq blame-reveal--temp-overlay-timer
+                      (run-with-idle-timer
+                       blame-reveal-temp-overlay-delay nil
+                       #'blame-reveal--temp-overlay-renderer
+                       (current-buffer) commit-hash color))
+
+                ;; Record the rendered block
+                (setq blame-reveal--last-rendered-commit commit-hash))))
+
+        ;; No current block - completely left all blocks
+        (when blame-reveal--temp-overlay-timer
+          (cancel-timer blame-reveal--temp-overlay-timer)
+          (setq blame-reveal--temp-overlay-timer nil))
+        (when blame-reveal--header-overlay
+          (delete-overlay blame-reveal--header-overlay)
+          (setq blame-reveal--header-overlay nil))
+        (blame-reveal--clear-temp-overlays)
+        (setq blame-reveal--current-block-commit nil)
+        (setq blame-reveal--last-rendered-commit nil))
 
       ;; Only update sticky header if layout is not 'none
       (unless (eq blame-reveal-display-layout 'none)
         (blame-reveal--update-sticky-header)))))
 
+(defun blame-reveal--update-header ()
+  "Update header display based on current cursor position.
+Delays rendering until cursor movement stops.
+Also triggers commit info loading when cursor stops."
+  (let ((current-block (blame-reveal--get-current-block)))
+    (when current-block
+      (let ((commit-hash (car current-block)))
+
+        ;; If a new block is entered, immediately clear the overlay of the previous block.
+        (when (and blame-reveal--last-rendered-commit
+                   (not (equal blame-reveal--last-rendered-commit commit-hash)))
+          (blame-reveal--clear-temp-overlays-for-commit
+           blame-reveal--last-rendered-commit)
+          (setq blame-reveal--last-rendered-commit nil))
+
+        ;; 更新当前块标记
+        (setq blame-reveal--current-block-commit commit-hash))))
+
+  ;; Cancel previous timer
+  (when blame-reveal--header-update-timer
+    (cancel-timer blame-reveal--header-update-timer)
+    (setq blame-reveal--header-update-timer nil))
+
+  ;; Set new timer for rendering
+  (setq blame-reveal--header-update-timer
+        (run-with-idle-timer
+         blame-reveal--scroll-render-delay nil
+         #'blame-reveal--update-header-impl)))
+
 (defun blame-reveal--scroll-handler-impl (buf)
-  "Implementation of scroll handler for buffer BUF."
+  "Implementation of scroll handler for buffer BUF.
+Only loads blame data (git blame), does NOT load commit info (git show).
+Commit info will be loaded later when cursor stops moving."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (when blame-reveal-mode
-        ;; If using lazy loading, ensure scrolled area is loaded
+        ;; If using lazy loading, check if we need to load more blame data
         (when blame-reveal--blame-data-range
           (let* ((range (blame-reveal--get-visible-line-range))
                  (start-line (car range))
-                 (end-line (cdr range)))
-            (blame-reveal--ensure-range-loaded start-line end-line)))
+                 (end-line (cdr range))
+                 (current-start (car blame-reveal--blame-data-range))
+                 (current-end (cdr blame-reveal--blame-data-range)))
+            ;; Only load if scrolled beyond current range
+            (when (or (< start-line current-start)
+                      (> end-line current-end))
+              (blame-reveal--ensure-range-loaded start-line end-line))))
 
-        ;; Load commit info for visible commits
-        (blame-reveal--ensure-visible-commits-loaded)
+        ;; DON'T load commit info here - too slow during scrolling
+        ;; Commit info will be loaded by post-command-hook when cursor stops
 
-        ;; Render visible region
+        ;; Render visible region with whatever data we have
         (blame-reveal--render-visible-region)
         (blame-reveal--update-sticky-header)))))
 
 (defun blame-reveal--on-scroll ()
-  "Handle scroll event with debouncing."
+  "Handle scroll event with debouncing.
+Delays rendering until scrolling stops."
   (let ((current-start (window-start)))
     (unless (equal current-start blame-reveal--last-window-start)
       (setq blame-reveal--last-window-start current-start)
+
+      ;; Cancel previous timer
       (when blame-reveal--scroll-timer
         (cancel-timer blame-reveal--scroll-timer))
+
+      ;; Only clear permanent overlays, retain temp overlays to maintain visual continuity.
+      (dolist (overlay blame-reveal--overlays)
+        (when (overlay-buffer overlay)
+          (delete-overlay overlay)))
+      (setq blame-reveal--overlays nil)
+
+      (when blame-reveal--header-overlay
+        (delete-overlay blame-reveal--header-overlay)
+        (setq blame-reveal--header-overlay nil))
+
+      (blame-reveal--clear-sticky-header)
+
+      ;; Set new timer with configured delay
       (setq blame-reveal--scroll-timer
             (run-with-idle-timer
-             0.1 nil
+             blame-reveal--scroll-render-delay nil
              #'blame-reveal--scroll-handler-impl
              (current-buffer))))))
 
@@ -2251,7 +2340,14 @@ This function always uses built-in git."
       (cancel-timer blame-reveal--temp-overlay-timer)
       (setq blame-reveal--temp-overlay-timer nil))
 
+    (when blame-reveal--header-update-timer
+      (cancel-timer blame-reveal--header-update-timer)
+      (setq blame-reveal--header-update-timer nil))
+
     (blame-reveal--clear-overlays)
+
+    (setq blame-reveal--last-rendered-commit nil)
+
     (remove-hook 'after-save-hook #'blame-reveal--full-update t)
     (remove-hook 'window-scroll-functions #'blame-reveal--scroll-handler t)
     (remove-hook 'post-command-hook #'blame-reveal--update-header t)
