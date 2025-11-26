@@ -65,13 +65,14 @@ HEAD: Back to present
 
 *** Performance
 
-| Metric          | Value  | Note                |
-|-----------------+--------+---------------------|
-| Initial load    | <100ms | Viewport only       |
-| Scroll          | <50ms  | Debounced           |
-| Recursive blame | <200ms | Full file           |
-| Memory          | ~1-2MB | Per buffer          |
-| Large files     | 10k+   | Lazy load threshold |
+| Feature           | Value  | Note                |
+|-------------------+--------+---------------------|
+| Initial load      | <100ms | Viewport only       |
+| Scroll            | <50ms  | Debounced           |
+| Recursive blame   | <200ms | Full file           |
+| Memory            | ~1-2MB | Per buffer          |
+| Large files       | 10k+   | Lazy load threshold |
+| Async loading     | ✓      | Optional (auto/on/off)|
 
 *** Commands
 
@@ -111,21 +112,29 @@ M-x blame-reveal-mode
 
 ** Configuration
 
-*** Quick Start (Recommended)
+*** Recommended Configuration
 
 #+begin_src elisp
 (use-package blame-reveal
   :config
-  (setq blame-reveal-recent-days-limit 'auto)        ; Smart calculation
+  ;; Smart time-based selection
+  (setq blame-reveal-recent-days-limit 'auto)        ; Adapt to commit frequency
   (setq blame-reveal-gradient-quality 'auto)         ; Balanced quality
+
+  ;; Display
   (setq blame-reveal-display-layout 'compact)        ; Show commit info
   (setq blame-reveal-show-uncommitted-fringe nil)    ; Use diff-hl instead
+
+  ;; Performance
+  (setq blame-reveal-async-blame 'auto)              ; Async for large files
+
+  ;; Enable recursive blame
   (require 'blame-reveal-recursive))
 #+end_src
 
 *** Key Options
 
-*Time-based selection:*
+*Time-based selection*:
 
 #+begin_src elisp
 ;; Auto (recommended): adapts to commit frequency
@@ -145,17 +154,23 @@ M-x blame-reveal-mode
 (setq blame-reveal-gradient-quality 'relaxed)  ; 15-30 commits, more history
 #+end_src
 
-*Display:*
+*Display*:
 
 #+begin_src elisp
+;; Layout
 (setq blame-reveal-display-layout 'none)       ; No header (use 's' to view)
 (setq blame-reveal-display-layout 'line)       ; Message only
 (setq blame-reveal-display-layout 'compact)    ; Message + metadata
 (setq blame-reveal-display-layout 'full)       ; + description
 
+;; Style
 (setq blame-reveal-display-style 'background)  ; Clean
 (setq blame-reveal-display-style 'box)         ; Boxed
 (setq blame-reveal-display-style 'inverse)     ; Inverted
+
+;; Fringe position
+(setq blame-reveal-style 'left-fringe)         ; Left side (default)
+(setq blame-reveal-style 'right-fringe)        ; Right side
 #+end_src
 
 *Color scheme* (HSL):
@@ -177,9 +192,15 @@ M-x blame-reveal-mode
       '(:hue 280 ...))                    ; Purple
 #+end_src
 
-*Performance:*
+*Performance*:
 
 #+begin_src elisp
+;; Async loading
+(setq blame-reveal-async-blame 'auto)          ; Auto (large files only)
+(setq blame-reveal-async-blame t)              ; Always async
+(setq blame-reveal-async-blame nil)            ; Always sync
+
+;; Lazy loading
 (setq blame-reveal-lazy-load-threshold 5000)   ; Files ≥ 5000 lines lazy load
 (setq blame-reveal-render-margin 50)           ; Lines beyond viewport
 #+end_src
@@ -214,21 +235,25 @@ M-x blame-reveal-clear-auto-cache
 
 #+begin_src elisp
 ;; Very active project (many daily commits)
-(setq blame-reveal-recent-days-limit 7          ; Show only last week
-      blame-reveal-gradient-quality 'strict)    ; Excellent distinction
+(dir-locals-set-class-variables 'my-active-project
+  '((nil . ((blame-reveal-recent-days-limit . 7)          ; Show only last week
+            (blame-reveal-gradient-quality . strict)))))  ; Excellent distinction
 
 ;; Inactive legacy project
-(setq blame-reveal-recent-days-limit 365        ; Show last year
-      blame-reveal-gradient-quality 'relaxed)   ; More history
+(dir-locals-set-class-variables 'my-legacy-project
+  '((nil . ((blame-reveal-recent-days-limit . 365)        ; Show last year
+            (blame-reveal-gradient-quality . relaxed))))) ; More history
 
 ;; Large monorepo with big files
-(setq blame-reveal-lazy-load-threshold 3000     ; Aggressive lazy loading
-      blame-reveal-render-margin 100)           ; Larger render margin
+(dir-locals-set-class-variables 'my-monorepo
+  '((nil . ((blame-reveal-lazy-load-threshold . 3000)     ; Aggressive lazy loading
+            (blame-reveal-render-margin . 100)            ; Larger render margin
+            (blame-reveal-async-blame . t)))))            ; Always async
 #+end_src
 
 *** Recursive Blame Workflows
 
-*Finding original author:*
+*Finding original author*:
 
 #+begin_example
 1. Navigate to line of interest
@@ -237,7 +262,7 @@ M-x blame-reveal-clear-auto-cache
 4. Press 'r' to return to HEAD
 #+end_example
 
-*Tracking bug introduction:*
+*Tracking bug introduction*:
 
 #+begin_example
 1. Find buggy line at HEAD
@@ -246,7 +271,7 @@ M-x blame-reveal-clear-auto-cache
 4. Press 's' to see full commit message
 #+end_example
 
-*Exploring refactoring:*
+*Exploring refactoring*:
 
 #+begin_example
 1. Find refactored code
@@ -255,7 +280,7 @@ M-x blame-reveal-clear-auto-cache
 4. Compare implementations across time
 #+end_example
 
-*Mode line indicator:*
+*Mode line indicator*:
 
 #+begin_example
 Normal mode:     (no indicator)
@@ -266,7 +291,7 @@ Recursive mode:  @abc123 Fix user login
 
 *** Integration with Other Tools
 
-*With diff-hl (recommended):*
+*With diff-hl (recommended)*:
 
 #+begin_src elisp
 (use-package diff-hl
@@ -281,7 +306,7 @@ Recursive mode:  @abc123 Fix user login
   (setq blame-reveal-style 'left-fringe))       ; Put blame on left, changes on right
 #+end_src
 
-*With magit:*
+*With magit*:
 
 #+begin_src elisp
 (use-package magit
@@ -295,9 +320,11 @@ Recursive mode:  @abc123 Fix user login
 |---------------------------+-------------------------------------------------------|
 | Colors too similar        | Use =strict= quality or fewer days                    |
 | Too few/many commits      | Set fixed days (e.g., =30=, =90=) or =nil= for all      |
-| Slow on large files       | Lower =lazy-load-threshold= (e.g., =2000=)            |
+| Slow on large files       | Enable async: =(setq blame-reveal-async-blame t)=     |
+| Scroll lag                | Lower =lazy-load-threshold= (e.g., =2000=)            |
 | Missing fringe            | Check =blame-reveal-style=, enable fringe mode        |
 | Wrong auto-calculation    | =M-x blame-reveal-show-auto-calculation=              |
+| Pager error (delta/less)  | Fixed automatically (sets =GIT_PAGER=cat=)            |
 
 ** Comparison
 
@@ -308,13 +335,15 @@ Recursive mode:  @abc123 Fix user login
 | Quality control       | ✓            | ✗           | ✗         | ✗           |
 | Recursive blame       | ✓            | ✗           | ✗         | ~           |
 | Sticky headers        | ✓            | ✗           | ✗         | ✗           |
+| Async loading         | ✓            | ✗           | ✗         | ✗           |
 | Large files (10k+)    | ✓            | ~           | ✗         | ✗           |
 
 ** Requirements
 
 - Emacs 27.1+
 - Git CLI
-- Optional: Magit
+- Optional: Magit (for richer commit views)
+- Optional: diff-hl (for uncommitted changes)
 
 ** License
 
