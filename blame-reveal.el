@@ -2014,17 +2014,27 @@ Returns list of created overlays."
     overlays))
 
 (defun blame-reveal--render-visible-region ()
-  "Render git blame fringe for visible region only."
+  "Render git blame fringe for visible region only.
+Reuses existing overlays when possible to minimize visual disruption."
   (when blame-reveal--blame-data
-    (blame-reveal--clear-overlays)
-
     (let* ((range (blame-reveal--get-visible-line-range))
            (start-line (car range))
            (end-line (cdr range))
            (blocks (blame-reveal--find-block-boundaries
                     blame-reveal--blame-data
                     start-line
-                    end-line)))
+                    end-line))
+           (existing-overlay-map (make-hash-table :test 'equal))
+           (used-overlays (make-hash-table :test 'eq))
+           (new-overlays nil))
+
+      ;; Index existing overlays by line number
+      (dolist (ov blame-reveal--overlays)
+        (when (overlay-buffer ov)
+          (let ((pos (overlay-start ov)))
+            (when pos
+              (let ((line (line-number-at-pos pos)))
+                (puthash line ov existing-overlay-map))))))
 
       ;; Ensure commit info is loaded for visible blocks
       (dolist (block blocks)
@@ -2034,7 +2044,7 @@ Returns list of created overlays."
       ;; Update recent commits based on what's loaded so far
       (blame-reveal--update-recent-commits)
 
-      ;; Render fringe for ALL recent commits in visible area
+      ;; Render blocks, reusing overlays when possible
       (dolist (block blocks)
         (let* ((block-start (nth 0 block))
                (commit-hash (nth 1 block))
@@ -2045,26 +2055,67 @@ Returns list of created overlays."
                        (not blame-reveal-show-uncommitted-fringe))
             ;; Render permanent fringe for recent commits
             (when (blame-reveal--should-render-commit commit-hash)
-              (let* ((color (blame-reveal--get-commit-color commit-hash))
-                     (ovs (blame-reveal--render-block-fringe
-                           block-start block-length commit-hash color)))
-                (setq blame-reveal--overlays
-                      (append ovs blame-reveal--overlays)))))))
+              (let ((color (blame-reveal--get-commit-color commit-hash))
+                    (block-end (+ block-start block-length -1)))
+
+                ;; Render each line in visible range
+                (let ((render-start (max block-start start-line))
+                      (render-end (min block-end end-line)))
+                  (dotimes (i (- render-end render-start -1))
+                    (let* ((line-num (+ render-start i))
+                           (existing-ov (gethash line-num existing-overlay-map)))
+
+                      (if existing-ov
+                          ;; Reuse existing overlay, just update its properties
+                          (progn
+                            (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
+                              (overlay-put existing-ov 'blame-reveal-commit commit-hash)
+                              (overlay-put existing-ov 'before-string
+                                           (propertize "!" 'display
+                                                       (list blame-reveal-style
+                                                             'blame-reveal-full
+                                                             fringe-face))))
+                            (puthash existing-ov t used-overlays)
+                            (push existing-ov new-overlays))
+
+                        ;; Create new overlay
+                        (when-let ((new-ov (blame-reveal--create-fringe-overlay
+                                            line-num color commit-hash)))
+                          (push new-ov new-overlays)))))))))))
+
+      ;; Delete overlays outside visible range or unused
+      (dolist (ov blame-reveal--overlays)
+        (unless (gethash ov used-overlays)
+          (when (overlay-buffer ov)
+            (delete-overlay ov))))
+
+      ;; Update overlay list
+      (setq blame-reveal--overlays new-overlays)
 
       ;; Re-trigger header update
       (blame-reveal--update-header))))
 
 (defun blame-reveal--render-expanded-region (start-line end-line)
-  "Render blame fringe only for newly expanded region START-LINE to END-LINE.
-Does not clear existing overlays, only adds new ones."
+  "Render blame fringe for newly expanded region START-LINE to END-LINE.
+Reuses existing overlays when possible to avoid flicker."
   (when blame-reveal--blame-data
     (let* ((blocks (blame-reveal--find-block-boundaries
                     blame-reveal--blame-data
                     start-line
                     end-line))
+           (existing-overlay-map (make-hash-table :test 'equal))
+           (used-overlays (make-hash-table :test 'eq))
            (new-overlays nil))
 
-      ;; Render fringe for recent commits in expanded area
+      ;; Index existing overlays by line number
+      (dolist (ov blame-reveal--overlays)
+        (when (overlay-buffer ov)
+          (let ((pos (overlay-start ov)))
+            (when pos
+              (let ((line (line-number-at-pos pos)))
+                (puthash line ov existing-overlay-map))))))
+
+      ;; Render blocks, reusing overlays when possible
       (dolist (block blocks)
         (let* ((block-start (nth 0 block))
                (commit-hash (nth 1 block))
@@ -2075,14 +2126,51 @@ Does not clear existing overlays, only adds new ones."
                        (not blame-reveal-show-uncommitted-fringe))
             ;; Render permanent fringe for recent commits
             (when (blame-reveal--should-render-commit commit-hash)
-              (let* ((color (blame-reveal--get-commit-color commit-hash))
-                     (ovs (blame-reveal--render-block-fringe
-                           block-start block-length commit-hash color)))
-                (setq new-overlays (append ovs new-overlays)))))))
+              (let ((color (blame-reveal--get-commit-color commit-hash))
+                    (block-end (+ block-start block-length -1)))
 
-      ;; Add new overlays to the list (don't replace)
-      (setq blame-reveal--overlays
-            (append new-overlays blame-reveal--overlays)))))
+                ;; Render each line in block
+                (dotimes (i (- block-end block-start -1))
+                  (let* ((line-num (+ block-start i))
+                         (existing-ov (gethash line-num existing-overlay-map)))
+
+                    (if existing-ov
+                        ;; Reuse existing overlay, just update its properties
+                        (progn
+                          (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
+                            (overlay-put existing-ov 'blame-reveal-commit commit-hash)
+                            (overlay-put existing-ov 'before-string
+                                         (propertize "!" 'display
+                                                     (list blame-reveal-style
+                                                           'blame-reveal-full
+                                                           fringe-face))))
+                          (puthash existing-ov t used-overlays)
+                          (push existing-ov new-overlays))
+
+                      ;; Create new overlay
+                      (when-let ((new-ov (blame-reveal--create-fringe-overlay
+                                          line-num color commit-hash)))
+                        (push new-ov new-overlays))))))))))
+
+      ;; Mark existing overlays as used (don't delete them)
+      (dolist (ov blame-reveal--overlays)
+        (when (overlay-buffer ov)
+          (let ((pos (overlay-start ov)))
+            (when pos
+              (let ((line (line-number-at-pos pos)))
+                ;; If this overlay is outside expanded region, keep it
+                (when (or (< line start-line) (> line end-line))
+                  (puthash ov t used-overlays)
+                  (push ov new-overlays)))))))
+
+      ;; Delete unused overlays in expanded region only
+      (dolist (ov blame-reveal--overlays)
+        (unless (gethash ov used-overlays)
+          (when (overlay-buffer ov)
+            (delete-overlay ov))))
+
+      ;; Update overlay list
+      (setq blame-reveal--overlays new-overlays))))
 
 (defun blame-reveal--recolor-and-render ()
   "Recalculate colors and re-render (for theme changes)."

@@ -256,8 +256,8 @@ Always loads complete file for proper recursive blame navigation."
                 ;; Load commit info for visible area
                 (blame-reveal--load-commits-incrementally)
 
-                ;; Render
-                (blame-reveal--render-visible-region)
+                ;; Smooth transition: fade out old overlays, render new ones
+                (blame-reveal--smooth-transition-render)
 
                 (message "Loaded blame at %s (%d lines)"
                          (or blame-reveal--revision-display revision)
@@ -292,6 +292,80 @@ Always loads complete file for proper recursive blame navigation."
       (kill-buffer temp-buffer)
       (setq blame-reveal--recursive-load-buffer nil)
       (setq blame-reveal--recursive-load-process nil))))
+
+(defun blame-reveal--smooth-transition-render ()
+  "Render new blame data by reusing existing overlays when possible.
+This minimizes visual disruption during recursive blame."
+  (when blame-reveal--blame-data
+    (let* ((range (blame-reveal--get-visible-line-range))
+           (start-line (car range))
+           (end-line (cdr range))
+           (blocks (blame-reveal--find-block-boundaries
+                    blame-reveal--blame-data
+                    start-line
+                    end-line))
+           (existing-overlay-map (make-hash-table :test 'equal))
+           (used-overlays (make-hash-table :test 'eq))
+           (new-overlays nil))
+
+      ;; Index existing overlays by line number
+      (dolist (ov blame-reveal--overlays)
+        (when (overlay-buffer ov)
+          (let ((pos (overlay-start ov)))
+            (when pos
+              (let ((line (line-number-at-pos pos)))
+                (puthash line ov existing-overlay-map))))))
+
+      ;; Render blocks, reusing overlays when possible
+      (dolist (block blocks)
+        (let* ((block-start (nth 0 block))
+               (commit-hash (nth 1 block))
+               (block-length (nth 2 block)))
+
+          ;; Skip uncommitted changes unless explicitly enabled
+          (unless (and (blame-reveal--is-uncommitted-p commit-hash)
+                       (not blame-reveal-show-uncommitted-fringe))
+            ;; Render permanent fringe for recent commits
+            (when (blame-reveal--should-render-commit commit-hash)
+              (let ((color (blame-reveal--get-commit-color commit-hash))
+                    (block-end (+ block-start block-length -1)))
+
+                ;; Render each line in block
+                (let ((render-start (max block-start start-line))
+                      (render-end (min block-end end-line)))
+                  (dotimes (i (- render-end render-start -1))
+                    (let* ((line-num (+ render-start i))
+                           (existing-ov (gethash line-num existing-overlay-map)))
+
+                      (if existing-ov
+                          ;; Reuse existing overlay, just update its properties
+                          (progn
+                            (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
+                              (overlay-put existing-ov 'blame-reveal-commit commit-hash)
+                              (overlay-put existing-ov 'before-string
+                                           (propertize "!" 'display
+                                                       (list blame-reveal-style
+                                                             'blame-reveal-full
+                                                             fringe-face))))
+                            (puthash existing-ov t used-overlays)
+                            (push existing-ov new-overlays))
+
+                        ;; Create new overlay
+                        (when-let ((new-ov (blame-reveal--create-fringe-overlay
+                                            line-num color commit-hash)))
+                          (push new-ov new-overlays)))))))))))
+
+      ;; Delete unused old overlays
+      (dolist (ov blame-reveal--overlays)
+        (unless (gethash ov used-overlays)
+          (when (overlay-buffer ov)
+            (delete-overlay ov))))
+
+      ;; Update overlay list
+      (setq blame-reveal--overlays new-overlays)
+
+      ;; Re-trigger header update
+      (blame-reveal--update-header))))
 
 
 ;;;; Synchronous Recursive Blame Functions
@@ -328,8 +402,8 @@ Always loads complete file for proper recursive blame navigation."
             ;; Load commit info for visible area
             (blame-reveal--load-commits-incrementally)
 
-            ;; Render
-            (blame-reveal--render-visible-region)
+            ;; Smooth transition render
+            (blame-reveal--smooth-transition-render)
 
             (message "Loaded blame at %s (%d lines)"
                      (or blame-reveal--revision-display revision)
@@ -395,8 +469,8 @@ Always loads complete file for proper recursive blame navigation."
   (setq blame-reveal--timestamps (plist-get state :timestamps))
   (setq blame-reveal--recent-commits (plist-get state :recent-commits))
 
-  ;; Re-render
-  (blame-reveal--render-visible-region)
+  ;; Smooth transition render instead of clearing all
+  (blame-reveal--smooth-transition-render)
 
   ;; Restore cursor position
   (goto-char (plist-get state :point))
