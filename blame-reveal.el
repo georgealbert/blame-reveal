@@ -1727,7 +1727,7 @@ Returns the created overlay."
                  (header-face (plist-get faces :header))
                  (metadata-face (plist-get faces :metadata))
                  (header-lines (split-string header-text "\n"))
-                 (sticky-indicator (propertize " " 'face `(:foreground ,color))))
+                 (sticky-indicator (propertize " " 'face `(:foreground ,color))))
 
       (overlay-put overlay 'blame-reveal-sticky t)
       (overlay-put overlay 'before-string
