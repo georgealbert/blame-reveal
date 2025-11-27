@@ -114,9 +114,6 @@ This is an implementation detail and should not be customized by users.")
 (defvar-local blame-reveal--sticky-header-overlay nil
   "Overlay for sticky header at window top.")
 
-(defvar-local blame-reveal--temp-overlay-timer nil
-  "Timer for delayed temp overlay rendering.")
-
 (defvar-local blame-reveal--header-update-timer nil
   "Timer for delayed header update.")
 
