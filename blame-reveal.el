@@ -67,8 +67,8 @@
     (define-key map (kbd "c") #'blame-reveal-copy-commit-hash)
     (define-key map (kbd "d") #'blame-reveal-show-commit-diff)
     (define-key map (kbd "s") #'blame-reveal-show-commit-details)
-    (define-key map (kbd "h") #'blame-reveal-show-file-history)
-    (define-key map (kbd "l") #'blame-reveal-show-line-history)
+    (define-key map (kbd "f") #'blame-reveal-show-file-history)
+    (define-key map (kbd "n") #'blame-reveal-show-line-history)
     (define-key map (kbd "b") #'blame-reveal-blame-recursively)
     (define-key map (kbd "p") #'blame-reveal-blame-back)
     (define-key map (kbd "^") #'blame-reveal-blame-back)
@@ -888,7 +888,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
   (with-temp-buffer
     (when (zerop (call-process "git" nil t nil "show"
                                "--no-patch"
-                               "--format=%h|%an|%ar|%s|%at"
+                               "--format=%h|%an|%ad|%s|%at"
+                               "--date=short"
                                commit-hash))
       (goto-char (point-min))
       (when (re-search-forward "\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([0-9]+\\)" nil t)
@@ -1825,7 +1826,8 @@ Returns (START-LINE . END-LINE)."
   (let ((face-name (intern (format "blame-reveal-face-%s" color))))
     (unless (facep face-name)
       (custom-declare-face face-name
-                           `((t :background ,color :foreground ,color))
+                           ;; `((t :background ,color :foreground ,color :inherit font-lock-comment-face :height 0.75))
+                           `((t :background ,color :inherit font-lock-comment-face :height 0.75))
                            (format "Face for git blame color %s" color)
                            :group 'blame-reveal))
     face-name))
@@ -1838,11 +1840,19 @@ Returns (START-LINE . END-LINE)."
     (unless (eobp)
       (let* ((pos (line-beginning-position))
              (overlay (make-overlay pos pos))
-             (fringe-face (blame-reveal--ensure-fringe-face color)))
+             (fringe-face (blame-reveal--ensure-fringe-face color))
+             (commit-info (gethash commit-hash blame-reveal--commit-info))
+             (short-id  (nth 0 commit-info))
+             (author  (nth 1 commit-info))
+             (date  (nth 2 commit-info))
+             )
         (overlay-put overlay 'blame-reveal t)
         (overlay-put overlay 'blame-reveal-commit commit-hash)
         (overlay-put overlay 'before-string
-                     (propertize "!" 'display
+        ;; (overlay-put overlay 'display
+                     ;; (propertize (concat date " " author " ") 'display
+                     (propertize (concat date " " author " ") 'face
+                                 ;; (list fringe-face)))
                                  (list blame-reveal-style
                                        'blame-reveal-full
                                        fringe-face)))
@@ -2037,7 +2047,13 @@ Reuses existing overlays when possible to minimize visual disruption."
       (dolist (block blocks)
         (let* ((block-start (nth 0 block))
                (commit-hash (nth 1 block))
-               (block-length (nth 2 block)))
+               (block-length (nth 2 block))
+               ;; Add commit info to display
+               (commit-info (gethash commit-hash blame-reveal--commit-info))
+               (short-id  (nth 0 commit-info))
+               (author  (nth 1 commit-info))
+               (date  (nth 2 commit-info))
+               )
 
           ;; Skip uncommitted changes unless explicitly enabled
           (unless (and (blame-reveal--is-uncommitted-p commit-hash)
@@ -2060,7 +2076,10 @@ Reuses existing overlays when possible to minimize visual disruption."
                             (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
                               (overlay-put existing-ov 'blame-reveal-commit commit-hash)
                               (overlay-put existing-ov 'before-string
+                              ;; (overlay-put existing-ov 'display
                                            (propertize "!" 'display
+                                           ;; (propertize (concat date " " author " ") 'display
+                                           ;; (propertize (concat date " " author " ") 'face
                                                        (list blame-reveal-style
                                                              'blame-reveal-full
                                                              fringe-face))))
@@ -2070,7 +2089,13 @@ Reuses existing overlays when possible to minimize visual disruption."
                         ;; Create new overlay
                         (when-let ((new-ov (blame-reveal--create-fringe-overlay
                                             line-num color commit-hash)))
-                          (push new-ov new-overlays)))))))))))
+                          (push new-ov new-overlays)))
+
+                        ;; ;; Create new overlay
+                        ;; (when-let ((new-ov (blame-reveal--create-fringe-overlay
+                        ;;                     line-num color commit-hash)))
+                        ;;   (push new-ov new-overlays)))
+                      ))))))))
 
       ;; Delete overlays outside visible range or unused
       (dolist (ov blame-reveal--overlays)
