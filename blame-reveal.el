@@ -58,6 +58,28 @@
    #b11111111]
   16 8 'center)
 
+(define-fringe-bitmap 'blame-reveal-loading-bright
+  [#b11111111
+   #b11111111
+   #b11111111
+   #b01111110
+   #b01111110
+   #b00111100
+   #b00011000
+   #b00000000]
+  8 8 'center)
+
+(define-fringe-bitmap 'blame-reveal-loading-dim
+  [#b11111111
+   #b11111111
+   #b11111111
+   #b01111110
+   #b01111110
+   #b00111100
+   #b00011000
+   #b00000000]
+  8 8 'center)
+
 
 ;;;; Keymaps
 
@@ -93,6 +115,15 @@
   "Internal delay before rendering overlays after scrolling stops.
 This is an implementation detail and should not be customized by users.")
 
+(defvar blame-reveal-loading-animation-speed 0.08
+  "Loading animation update interval in seconds.")
+
+(defvar blame-reveal-loading-animation-frames-per-step 4
+  "Number of frames before advancing to next step.")
+
+(defvar blame-reveal--global-loading-animation-timer nil
+  "Global timer for loading animation across all buffers.")
+
 
 ;;;; Buffer-Local State Variables
 
@@ -122,6 +153,18 @@ This is an implementation detail and should not be customized by users.")
 
 (defvar-local blame-reveal--current-block-commit nil
   "Commit hash of the currently highlighted block.")
+
+(defvar-local blame-reveal--loading-animation-overlays nil
+  "Overlays for loading animation.")
+
+(defvar-local blame-reveal--loading-animation-step 0
+  "Current step of loading animation.")
+
+(defvar-local blame-reveal--loading-animation-frame-counter 0
+  "Frame counter for animation step control.")
+
+(defvar-local blame-reveal--loading-animation-sub-step 0
+  "Sub-step for smooth interpolation (0.0 to 1.0).")
 
 
 ;;;; Data Cache Variables
@@ -628,17 +671,23 @@ ERROR-HANDLER is optional function called on error in source buffer."
          (with-current-buffer ,source-buffer
            (funcall ,success-handler ,temp-buffer))))
 
-      ((string-match-p "exited abnormally" event)
-       (message "Async blame failed: %s" event)
-       (when (buffer-live-p ,temp-buffer)
+      ;; 任何非正常结束都当作错误处理
+      (t
+       (message "Async blame process ended: %s" event)
+       (when (and (buffer-live-p ,temp-buffer)
+                  (> (buffer-size ,temp-buffer) 0))
          (with-current-buffer ,temp-buffer
-           (message "Git error: %s" (buffer-string)))
+           (message "Git output: %s" (buffer-substring-no-properties
+                                      (point-min)
+                                      (min (point-max) 500)))))
+       (when (buffer-live-p ,temp-buffer)
          (kill-buffer ,temp-buffer))
        (when (buffer-live-p ,source-buffer)
          (with-current-buffer ,source-buffer
            (set ',process-var nil)
            (set ',buffer-var nil)
            (setq blame-reveal--loading nil)
+           (blame-reveal--stop-loading-animation)
            ;; Call optional error handler
            ,(when error-handler
               `(funcall ,error-handler))))))))
@@ -730,6 +779,176 @@ Note: Must be called with the source buffer as current-buffer."
                                 :height description-height :background bg))))))
 
 
+;;;; Loading Animation Functions
+
+(defun blame-reveal--get-loading-gradient-color (intensity)
+  "Get loading animation color with INTENSITY (0.0 to 1.0)."
+  (let* ((is-dark (blame-reveal--is-dark-theme-p))
+         (base-color (if is-dark "#6c9ef8" "#4a7dc0"))
+         (rgb (color-name-to-rgb base-color))
+         (r (nth 0 rgb))
+         (g (nth 1 rgb))
+         (b (nth 2 rgb)))
+    (format "#%02x%02x%02x"
+            (round (* 255 (* r intensity)))
+            (round (* 255 (* g intensity)))
+            (round (* 255 (* b intensity))))))
+
+(defun blame-reveal--get-fringe-background ()
+  "Get the appropriate fringe background color."
+  (or (face-background 'fringe nil t)
+      (face-background 'default nil t)
+      "unspecified"))
+
+(defun blame-reveal--ensure-fringe-face-with-bg (color)
+  "Ensure a face exists for COLOR with proper fringe background."
+  (let* ((face-name (intern (format "blame-reveal-fringe-%s" color)))
+         (bg-color (blame-reveal--get-fringe-background)))
+    (unless (facep face-name)
+      (make-face face-name)
+      (set-face-attribute face-name nil
+                          :foreground color
+                          :background bg-color))
+    ;; 动态更新背景色(主题切换时)
+    (when (facep face-name)
+      (set-face-attribute face-name nil :background bg-color))
+    face-name))
+
+(defun blame-reveal--create-loading-animation ()
+  "Create loading animation overlays with smooth interpolated trail effect."
+  ;; 找到显示当前 buffer 的窗口
+  (let ((win (get-buffer-window (current-buffer))))
+    (if (not win)
+        nil  ; 如果 buffer 不可见，不创建动画
+      (let* ((win-height (window-body-height win))
+             (center-line (/ win-height 2))
+             (num-indicators 6)
+             (half-num (/ num-indicators 2))
+             (start-line (max 1 (- center-line half-num)))
+             (overlays nil)
+             ;; 当前的精确位置(包含子步进)
+             (current-pos (+ blame-reveal--loading-animation-step
+                            blame-reveal--loading-animation-sub-step)))
+
+        (save-excursion
+          (goto-char (window-start win))
+          (forward-line (1- start-line))
+
+          (dotimes (i num-indicators)
+            (unless (eobp)
+              (let* ((pos (line-beginning-position))
+                     (ov (make-overlay pos pos))
+                     ;; 计算精确的浮点距离
+                     (raw-offset (- i current-pos))
+                     ;; 标准化 offset 实现循环衔接
+                     (offset (cond
+                              ((> raw-offset (/ num-indicators 2.0))
+                               (- raw-offset num-indicators))
+                              ((< raw-offset (- (/ num-indicators 2.0)))
+                               (+ raw-offset num-indicators))
+                              (t raw-offset)))
+                     ;; 使用平滑的距离衰减函数
+                     (distance (abs offset))
+                     ;; 指数衰减 + 平滑插值
+                     (intensity (cond
+                                ;; 核心亮点区域(距离 < 0.5)
+                                ((< distance 0.5) 1.0)
+                                ;; 平滑衰减区域
+                                ((<= distance 3.5)
+                                 (max 0.1 (* (- 1.0 (* distance 0.25))
+                                           (- 1.0 (* distance 0.15)))))
+                                ;; 背景暗淡
+                                (t 0.05)))
+                     ;; 根据亮度选择 bitmap
+                     (bitmap (cond
+                              ((> intensity 0.5) 'blame-reveal-loading-bright)
+                              ((> intensity 0.2) 'blame-reveal-loading-bright)
+                              (t 'blame-reveal-loading-dim)))
+                     (color (blame-reveal--get-loading-gradient-color intensity))
+                     (face (blame-reveal--ensure-fringe-face-with-bg color)))
+
+                (overlay-put ov 'blame-reveal-loading t)
+                (overlay-put ov 'before-string
+                            (propertize "!" 'display
+                                      (list blame-reveal-style
+                                            bitmap
+                                            face)))
+                (push ov overlays)
+                (forward-line 1)))))
+
+        (nreverse overlays)))))
+
+(defun blame-reveal--update-loading-animation ()
+  "Update loading animation with smooth sub-step interpolation."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        ;; 只更新正在加载且可见的 buffer
+        (when (and blame-reveal-mode
+                   blame-reveal--loading
+                   (get-buffer-window buffer))  ; 关键：只处理可见的 buffer
+          ;; 清理旧的 overlays
+          (dolist (ov blame-reveal--loading-animation-overlays)
+            (when (overlay-buffer ov)
+              (delete-overlay ov)))
+
+          ;; 更新子步进(0.0 到 1.0 之间平滑变化)
+          (setq blame-reveal--loading-animation-frame-counter
+                (1+ blame-reveal--loading-animation-frame-counter))
+
+          (setq blame-reveal--loading-animation-sub-step
+                (/ (float blame-reveal--loading-animation-frame-counter)
+                   blame-reveal-loading-animation-frames-per-step))
+
+          ;; 当子步进达到 1.0 时,前进到下一个整数步
+          (when (>= blame-reveal--loading-animation-frame-counter
+                    blame-reveal-loading-animation-frames-per-step)
+            (setq blame-reveal--loading-animation-frame-counter 0)
+            (setq blame-reveal--loading-animation-sub-step 0.0)
+            (setq blame-reveal--loading-animation-step
+                  (mod (1+ blame-reveal--loading-animation-step) 6)))
+
+          ;; 重新创建 overlays(每帧都更新,形成平滑过渡)
+          (setq blame-reveal--loading-animation-overlays
+                (blame-reveal--create-loading-animation)))))))
+
+(defun blame-reveal--start-loading-animation ()
+  "Start loading animation with smooth interpolation."
+  (setq blame-reveal--loading-animation-step 0)
+  (setq blame-reveal--loading-animation-frame-counter 0)
+  (setq blame-reveal--loading-animation-sub-step 0.0)
+  (setq blame-reveal--loading-animation-overlays
+        (blame-reveal--create-loading-animation))
+
+  ;; 启动全局定时器（如果还没启动）
+  (unless blame-reveal--global-loading-animation-timer
+    (setq blame-reveal--global-loading-animation-timer
+          (run-with-timer blame-reveal-loading-animation-speed
+                          blame-reveal-loading-animation-speed
+                          #'blame-reveal--update-loading-animation))))
+
+(defun blame-reveal--stop-loading-animation ()
+  "Stop and clear loading animation."
+  ;; 清理当前 buffer 的动画 overlays
+  (dolist (ov blame-reveal--loading-animation-overlays)
+    (when (overlay-buffer ov)
+      (delete-overlay ov)))
+  (setq blame-reveal--loading-animation-overlays nil)
+  (setq blame-reveal--loading-animation-step 0)
+  (setq blame-reveal--loading-animation-frame-counter 0)
+  (setq blame-reveal--loading-animation-sub-step 0.0)
+
+  ;; 检查是否所有 buffer 都停止加载了
+  ;; 如果是，停止全局定时器
+  (unless (cl-some (lambda (buf)
+                     (with-current-buffer buf
+                       (and blame-reveal-mode blame-reveal--loading)))
+                   (buffer-list))
+    (when blame-reveal--global-loading-animation-timer
+      (cancel-timer blame-reveal--global-loading-animation-timer)
+      (setq blame-reveal--global-loading-animation-timer nil))))
+
+
 ;;;; Parse Function (Shared by Sync and Async)
 
 (defun blame-reveal--parse-blame-output (output-buffer)
@@ -798,12 +1017,14 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
 (defun blame-reveal--load-blame-data-sync ()
   "Load git blame data synchronously.
 Use lazy loading for large files, full loading for small files."
+  (blame-reveal--start-loading-animation)
   (condition-case err
       (let* ((file (buffer-file-name))
              (git-root (and file (vc-git-root file))))
 
         (unless git-root
           (setq blame-reveal--loading nil)
+          (blame-reveal--stop-loading-animation)
           (message "File is not in a git repository")
           (cl-return-from blame-reveal--load-blame-data-sync nil))
 
@@ -835,7 +1056,6 @@ Use lazy loading for large files, full loading for small files."
                 (setq blame-reveal--timestamps nil)
                 (setq blame-reveal--recent-commits nil)
                 (setq blame-reveal--all-commits-loaded nil)
-                (setq blame-reveal--loading nil)
 
                 ;; Load commits incrementally
                 (blame-reveal--load-commits-incrementally)
@@ -843,16 +1063,21 @@ Use lazy loading for large files, full loading for small files."
                 ;; Initial render
                 (blame-reveal--render-visible-region))
 
-            (setq blame-reveal--loading nil)
             (message "No git blame data available"))))
 
     (error
-     (setq blame-reveal--loading nil)
+     ;; 错误时也要清理
      (message "Error loading git blame: %s" (error-message-string err))
-     nil)))
+     nil))
+
+  ;; 无论成功还是失败，最后都要清理（放在 condition-case 外面）
+  (setq blame-reveal--loading nil)
+  (blame-reveal--stop-loading-animation))
 
 (defun blame-reveal--expand-blame-data-sync (start-line end-line)
   "Synchronously expand blame data to include START-LINE to END-LINE."
+  (setq blame-reveal--loading t)  ;; 关键：设置加载标志
+  (blame-reveal--start-loading-animation)
   (condition-case err
       (let ((new-data (blame-reveal--get-blame-data-range start-line end-line)))
 
@@ -907,8 +1132,13 @@ Use lazy loading for large files, full loading for small files."
                        added-count (length blame-reveal--blame-data))))))
 
     (error
+     ;; 错误时也要清理
      (message "Error expanding git blame: %s" (error-message-string err))
-     nil)))
+     nil))
+
+  ;; 无论成功还是失败，最后都要清理（放在 condition-case 外面）
+  (setq blame-reveal--loading nil)
+  (blame-reveal--stop-loading-animation))
 
 (defun blame-reveal--get-commit-info (commit-hash)
   "Get commit info for COMMIT-HASH.
@@ -967,6 +1197,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
         (message "Loading git blame (async, lazy): lines %d-%d..." start-line end-line)
       (message "Loading git blame (async, full)..."))
 
+    (blame-reveal--start-loading-animation)
+
     ;; Start async process
     (blame-reveal--start-async-blame
      'blame-reveal--initial-load-process
@@ -980,8 +1212,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
 
 (defun blame-reveal--handle-initial-load-complete (temp-buffer use-lazy)
   "Handle completion of initial async blame loading from TEMP-BUFFER."
-  (when (buffer-live-p temp-buffer)
-    (unwind-protect
+  (unwind-protect
+      (when (buffer-live-p temp-buffer)
         (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
 
           (if blame-data
@@ -1008,23 +1240,26 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
                 (blame-reveal--load-commits-incrementally)
 
                 ;; Initial render
-                (blame-reveal--render-visible-region)
+                (blame-reveal--render-visible-region))
 
-                (setq blame-reveal--loading nil))
+            (message "No git blame data available"))))
 
-            (message "No git blame data available")
-            (setq blame-reveal--loading nil)))
-
-      ;; Cleanup
-      (kill-buffer temp-buffer)
-      (setq blame-reveal--initial-load-buffer nil)
-      (setq blame-reveal--initial-load-process nil))))
+    ;; Cleanup - 无论成功失败都要清理（unwind-protect 保证一定执行）
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (setq blame-reveal--initial-load-buffer nil)
+    (setq blame-reveal--initial-load-process nil)
+    (setq blame-reveal--loading nil)
+    (blame-reveal--stop-loading-animation)))
 
 (defun blame-reveal--expand-blame-data-async (start-line end-line)
   "Asynchronously expand blame data to include START-LINE to END-LINE."
   ;; Record pending expansion and set flag
   (setq blame-reveal--pending-expansion (cons start-line end-line))
   (setq blame-reveal--is-expanding t)
+  (setq blame-reveal--loading t)  ;; 关键：设置加载标志
+
+  (blame-reveal--start-loading-animation)
 
   (blame-reveal--start-async-blame
    'blame-reveal--expansion-process
@@ -1038,12 +1273,14 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
    ;; Error handler: cleanup expansion-specific state
    (lambda ()
      (setq blame-reveal--pending-expansion nil)
-     (setq blame-reveal--is-expanding nil))))
+     (setq blame-reveal--is-expanding nil)
+     (setq blame-reveal--loading nil)  ;; 错误时也要清理
+     (blame-reveal--stop-loading-animation))))
 
 (defun blame-reveal--handle-expansion-complete (temp-buffer start-line end-line)
   "Handle completion of async blame expansion from TEMP-BUFFER."
-  (when (buffer-live-p temp-buffer)
-    (unwind-protect
+  (unwind-protect
+      (when (buffer-live-p temp-buffer)
         (let ((new-data (blame-reveal--parse-blame-output temp-buffer)))
 
           (if (null new-data)
@@ -1100,14 +1337,17 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
                     (blame-reveal--update-header)))
 
                 (message "Blame expanded: +%d lines (total %d)"
-                         added-count (length blame-reveal--blame-data))))))
+                         added-count (length blame-reveal--blame-data)))))))
 
-      ;; Cleanup
-      (kill-buffer temp-buffer)
-      (setq blame-reveal--expansion-buffer nil)
-      (setq blame-reveal--expansion-process nil)
-      (setq blame-reveal--pending-expansion nil)
-      (setq blame-reveal--is-expanding nil))))
+    ;; Cleanup - 无论成功失败都要清理（unwind-protect 保证一定执行）
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (setq blame-reveal--expansion-buffer nil)
+    (setq blame-reveal--expansion-process nil)
+    (setq blame-reveal--pending-expansion nil)
+    (setq blame-reveal--is-expanding nil)
+    (setq blame-reveal--loading nil)
+    (blame-reveal--stop-loading-animation)))
 
 
 ;;;; Lazy Loading Functions
@@ -1117,28 +1357,38 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
   (> (line-number-at-pos (point-max))
      blame-reveal-lazy-load-threshold))
 
+(defun blame-reveal--is-range-loaded-p (start-line end-line)
+  "Check if range START-LINE to END-LINE is already loaded."
+  (if (not blame-reveal--blame-data-range)
+      t  ;; Full file loaded
+    (let ((current-start (car blame-reveal--blame-data-range))
+          (current-end (cdr blame-reveal--blame-data-range)))
+      (and (>= start-line current-start)
+           (<= end-line current-end)))))
+
 (defun blame-reveal--ensure-range-loaded (start-line end-line)
   "Ensure blame data is loaded for range START-LINE to END-LINE.
 Uses sync or async based on configuration."
-  (when blame-reveal--blame-data-range
-    (let ((current-start (car blame-reveal--blame-data-range))
-          (current-end (cdr blame-reveal--blame-data-range)))
-      (when (or (< start-line current-start)
-                (> end-line current-end))
-        ;; Check if there's already a pending expansion that covers this range
-        (if (and blame-reveal--pending-expansion
-                 (let ((pending-start (car blame-reveal--pending-expansion))
-                       (pending-end (cdr blame-reveal--pending-expansion)))
-                   (and (<= pending-start start-line)
-                        (>= pending-end end-line))))
-            ;; Already loading this range, do nothing
-            nil
-          ;; Need to load more data
-          (let ((new-start (min start-line current-start))
-                (new-end (max end-line current-end)))
-            (if (blame-reveal--should-use-async-p)
-                (blame-reveal--expand-blame-data-async new-start new-end)
-              (blame-reveal--expand-blame-data-sync new-start new-end))))))))
+  (unless (blame-reveal--is-range-loaded-p start-line end-line)
+    (when blame-reveal--blame-data-range
+      (let ((current-start (car blame-reveal--blame-data-range))
+            (current-end (cdr blame-reveal--blame-data-range)))
+        (when (or (< start-line current-start)
+                  (> end-line current-end))
+          ;; 关键：如果已经在加载中，不要重复触发
+          (unless blame-reveal--loading
+            ;; Check if there's already a pending expansion that covers this range
+            (unless (and blame-reveal--pending-expansion
+                         (let ((pending-start (car blame-reveal--pending-expansion))
+                               (pending-end (cdr blame-reveal--pending-expansion)))
+                           (and (<= pending-start start-line)
+                                (>= pending-end end-line))))
+              ;; Need to load more data
+              (let ((new-start (min start-line current-start))
+                    (new-end (max end-line current-end)))
+                (if (blame-reveal--should-use-async-p)
+                    (blame-reveal--expand-blame-data-async new-start new-end)
+                  (blame-reveal--expand-blame-data-sync new-start new-end))))))))))
 
 (defun blame-reveal--expand-blame-data (start-line end-line)
   "Expand blame data to include START-LINE to END-LINE."
@@ -3010,6 +3260,8 @@ This function always uses built-in git."
     (setq emulation-mode-map-alists
           (delq 'blame-reveal--emulation-alist
                 emulation-mode-map-alists))
+
+    (blame-reveal--stop-loading-animation)
 
     (when blame-reveal--temp-overlay-timer
       (cancel-timer blame-reveal--temp-overlay-timer)

@@ -41,6 +41,19 @@
 
 ;;;; Helper Functions
 
+(defun blame-reveal--build-blame-command-args-for-revision (revision start-line end-line relative-file)
+  "Build git blame command arguments for specific REVISION.
+Similar to `blame-reveal--build-blame-command-args' but for arbitrary revisions."
+  (let ((args (list "blame" "--porcelain")))
+    ;; Add line range if provided
+    (when (and start-line end-line)
+      (setq args (append args (list "-L" (format "%d,%d" start-line end-line)))))
+    ;; Add revision (unless it's uncommitted)
+    (unless (eq revision 'uncommitted)
+      (setq args (append args (list revision))))
+    ;; Add file at the end
+    (append args (list "--" relative-file))))
+
 (defun blame-reveal--file-exists-at-revision-p (revision file)
   "Check if FILE exists at REVISION.
 Returns t if file exists, nil otherwise."
@@ -132,27 +145,59 @@ Returns nil if REVISION is not a parent reference."
 (defun blame-reveal--load-blame-at-revision-async (revision)
   "Load blame data at REVISION asynchronously.
 Always loads complete file for proper recursive blame navigation."
-  (message "Loading blame at %s..."
-           (if (eq revision 'uncommitted) "working tree" revision))
+  (let* ((file (buffer-file-name))
+         (git-root (and file (vc-git-root file)))
+         (source-buffer (current-buffer)))
 
-  (blame-reveal--start-async-blame
-   'blame-reveal--recursive-load-process
-   'blame-reveal--recursive-load-buffer
-   " *blame-recursive-load*"
-   "blame-recursive-load"
-   nil  ; start-line: nil = entire file
-   nil  ; end-line: nil = entire file
-   (lambda (temp-buffer)
-     (blame-reveal--handle-recursive-load-complete
-      temp-buffer revision (buffer-file-name)))
-   ;; Error handler
-   (lambda ()
-     (blame-reveal--handle-recursive-load-error revision (buffer-file-name)))))
+    (unless git-root
+      (user-error "File is not in a git repository"))
+
+    (message "Loading blame at %s..."
+             (if (eq revision 'uncommitted) "working tree" revision))
+
+    ;; 启动加载动画
+    (setq blame-reveal--loading t)
+    (blame-reveal--start-loading-animation)
+
+    ;; Cleanup existing process
+    (blame-reveal--cleanup-async-state 'blame-reveal--recursive-load-process
+                                       'blame-reveal--recursive-load-buffer)
+
+    (let* ((default-directory git-root)
+           (relative-file (file-relative-name file git-root))
+           (temp-buffer (generate-new-buffer " *blame-recursive-load*"))
+           (process-environment (cons "GIT_PAGER=cat"
+                                      (cons "PAGER=cat"
+                                            process-environment))))
+
+      (setq blame-reveal--recursive-load-buffer temp-buffer)
+
+      ;; Build command args for this specific revision
+      (let ((args (blame-reveal--build-blame-command-args-for-revision
+                   revision nil nil relative-file)))
+
+        (message "Git command: git %s" (mapconcat 'identity args " "))
+
+        (setq blame-reveal--recursive-load-process
+              (make-process
+               :name "blame-recursive-load"
+               :buffer temp-buffer
+               :command (cons "git" args)
+               :sentinel (blame-reveal--make-async-sentinel
+                          source-buffer temp-buffer
+                          (lambda (temp-buf)
+                            (blame-reveal--handle-recursive-load-complete
+                             temp-buf revision file))
+                          'blame-reveal--recursive-load-process
+                          'blame-reveal--recursive-load-buffer
+                          (lambda ()
+                            (blame-reveal--handle-recursive-load-error revision file)))
+               :noquery t))))))
 
 (defun blame-reveal--handle-recursive-load-complete (temp-buffer revision file)
   "Handle completion of recursive blame loading from TEMP-BUFFER."
-  (when (buffer-live-p temp-buffer)
-    (unwind-protect
+  (unwind-protect
+      (when (buffer-live-p temp-buffer)
         (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
 
           (if blame-data
@@ -176,12 +221,16 @@ Always loads complete file for proper recursive blame navigation."
                          (length blame-data)))
 
             ;; No blame data
-            (blame-reveal--handle-recursive-load-error revision file)))
+            (message "Failed to parse blame data")
+            (blame-reveal--handle-recursive-load-error revision file))))
 
-      ;; Cleanup
-      (kill-buffer temp-buffer)
-      (setq blame-reveal--recursive-load-buffer nil)
-      (setq blame-reveal--recursive-load-process nil))))
+    ;; Cleanup - 无论成功失败都要清理
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (setq blame-reveal--recursive-load-buffer nil)
+    (setq blame-reveal--recursive-load-process nil)
+    (setq blame-reveal--loading nil)
+    (blame-reveal--stop-loading-animation)))
 
 
 ;;;; Synchronous Recursive Blame
@@ -199,15 +248,15 @@ REVISION can be a commit hash or 'uncommitted for working tree."
                                        (cons "PAGER=cat"
                                              process-environment))))
         (with-temp-buffer
-          (let* ((args (blame-reveal--build-blame-command-args
+          (let* ((args (blame-reveal--build-blame-command-args-for-revision
+                        revision
                         (when range (car range))
                         (when range (cdr range))
                         relative-file))
-                 ;; Override revision in args
-                 (args (if (eq revision 'uncommitted)
-                           args
-                         (append (butlast args) (list revision "--" (car (last args))))))
                  (exit-code (apply #'call-process "git" nil t nil args)))
+            (message "Git command: git %s (exit: %d)" (mapconcat 'identity args " ") exit-code)
+            (when (not (zerop exit-code))
+              (message "Git error output: %s" (buffer-string)))
             (when (zerop exit-code)
               (blame-reveal--parse-blame-output (current-buffer)))))))))
 
@@ -221,45 +270,58 @@ Always loads complete file for proper recursive blame navigation."
     (message "Loading blame at %s..."
              (if (eq revision 'uncommitted) "working tree" revision))
 
-    (let ((blame-data (blame-reveal--get-blame-data-at-revision revision file)))
-      (if blame-data
-          (progn
-            ;; Update current state
-            (setq blame-reveal--current-revision revision)
-            (setq blame-reveal--revision-display
-                  (if (eq revision 'uncommitted)
-                      "Working Tree"
-                    (blame-reveal--get-commit-short-info revision)))
+    ;; 启动加载动画
+    (setq blame-reveal--loading t)
+    (blame-reveal--start-loading-animation)
 
-            ;; Reset data structures
-            (blame-reveal--reset-data-structures blame-data)
+    (condition-case err
+        (let ((blame-data (blame-reveal--get-blame-data-at-revision revision file)))
+          (if blame-data
+              (progn
+                ;; Update current state
+                (setq blame-reveal--current-revision revision)
+                (setq blame-reveal--revision-display
+                      (if (eq revision 'uncommitted)
+                          "Working Tree"
+                        (blame-reveal--get-commit-short-info revision)))
 
-            ;; Load commit info and render
-            (blame-reveal--load-commits-incrementally)
-            (blame-reveal--smooth-transition-render)
+                ;; Reset data structures
+                (blame-reveal--reset-data-structures blame-data)
 
-            (message "Loaded blame at %s (%d lines)"
-                     (or blame-reveal--revision-display revision)
-                     (length blame-data)))
+                ;; Load commit info and render
+                (blame-reveal--load-commits-incrementally)
+                (blame-reveal--smooth-transition-render)
 
-        ;; No blame data - determine why
-        (let* ((base-commit (blame-reveal--get-base-commit-from-parent-ref revision))
-               (is-initial (and base-commit
-                                (blame-reveal--is-initial-commit-p base-commit)))
-               (file-exists (and base-commit
-                                 (blame-reveal--file-exists-at-revision-p base-commit file))))
+                (message "Loaded blame at %s (%d lines)"
+                         (or blame-reveal--revision-display revision)
+                         (length blame-data)))
 
-          (cond
-           (is-initial
-            (user-error "Reached initial commit %s - this is the repository's first commit"
-                        (substring base-commit 0 8)))
+            ;; No blame data - determine why
+            (let* ((base-commit (blame-reveal--get-base-commit-from-parent-ref revision))
+                   (is-initial (and base-commit
+                                    (blame-reveal--is-initial-commit-p base-commit)))
+                   (file-exists (and base-commit
+                                     (blame-reveal--file-exists-at-revision-p base-commit file))))
 
-           ((and base-commit (not file-exists))
-            (user-error "Reached the commit where this file was first added (%s)"
-                        (substring base-commit 0 8)))
+              (cond
+               (is-initial
+                (user-error "Reached initial commit %s - this is the repository's first commit"
+                            (substring base-commit 0 8)))
 
-           (t
-            (user-error "Failed to get blame data at revision %s" revision))))))))
+               ((and base-commit (not file-exists))
+                (user-error "Reached the commit where this file was first added (%s)"
+                            (substring base-commit 0 8)))
+
+               (t
+                (user-error "Failed to get blame data at revision %s" revision))))))
+
+      (error
+       (message "Error during recursive blame: %s" (error-message-string err))
+       (signal (car err) (cdr err))))
+
+    ;; 无论成功失败，最后都要清理（放在 condition-case 外面）
+    (setq blame-reveal--loading nil)
+    (blame-reveal--stop-loading-animation)))
 
 
 ;;;; Unified Interface
@@ -297,6 +359,14 @@ This minimizes visual disruption during recursive blame."
               (let ((line (line-number-at-pos pos)))
                 (puthash line ov existing-overlay-map))))))
 
+      ;; Ensure commit info is loaded for visible blocks
+      (dolist (block blocks)
+        (let ((commit-hash (nth 1 block)))
+          (blame-reveal--ensure-commit-info commit-hash)))
+
+      ;; Update recent commits based on what's loaded so far
+      (blame-reveal--update-recent-commits)
+
       ;; Render blocks, reusing overlays when possible
       (dolist (block blocks)
         (let* ((block-start (nth 0 block))
@@ -311,7 +381,7 @@ This minimizes visual disruption during recursive blame."
               (let ((color (blame-reveal--get-commit-color commit-hash))
                     (block-end (+ block-start block-length -1)))
 
-                ;; Render each line in block
+                ;; Render each line in visible range
                 (let ((render-start (max block-start start-line))
                       (render-end (min block-end end-line)))
                   (dotimes (i (- render-end render-start -1))
@@ -418,10 +488,12 @@ This is useful for:
 
     ;; Jump to parent commit
     (let ((parent-commit (concat commit-hash "^")))
+      (message "Recursive blame: %s -> %s" (substring commit-hash 0 8) parent-commit)
       (condition-case err
           (blame-reveal--load-blame-at-revision parent-commit)
         (error
          ;; Restore state on error
+         (message "Error in recursive blame: %s" (error-message-string err))
          (let ((state (pop blame-reveal--blame-stack)))
            (when state
              (blame-reveal--restore-state state)))
@@ -469,10 +541,12 @@ REVISION can be:
   ;; Save current state
   (blame-reveal--save-current-state)
 
+  (message "Blame at revision: %s" revision)
   (condition-case err
       (blame-reveal--load-blame-at-revision revision)
     (error
      ;; Restore state on error
+     (message "Error in blame at revision: %s" (error-message-string err))
      (let ((state (pop blame-reveal--blame-stack)))
        (when state
          (blame-reveal--restore-state state)))
