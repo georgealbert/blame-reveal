@@ -1,7 +1,7 @@
 ;;; blame-reveal.el --- Show git blame in fringe with colors -*- lexical-binding: t; -*-
 
 ;; Author: Lucius Chen
-;; Version: 0.4
+;; Version: 0.5
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: git, vc, convenience
 
@@ -296,6 +296,34 @@ view commit details using `blame-reveal-show-commit-details' (s key)."
   "Font height for the description lines in blame header.
 1.0 means default size, 0.9 means 90% of default, 1.1 means 110%."
   :type 'number
+  :group 'blame-reveal)
+
+(defcustom blame-reveal-header-position 'before-block
+  "Position of commit message header relative to code block.
+- `before-block': Show header above the first line of the block (default)
+- `after-first-line': Show header after the first line of the block
+
+When set to `after-first-line':
+  - Header appears immediately after the first line of code
+  - Maintains fixed distance from the code
+  - For `compact' layout: shows as single line (msg · author · hash)
+  - For `line' layout: shows only commit message
+  - `full' layout is not supported in this mode (falls back to compact)"
+  :type '(choice (const :tag "Before block (above first line)" before-block)
+                 (const :tag "After first line (inline style)" after-first-line))
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         ;; Refresh all blame-reveal buffers when value changes
+         (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+           (dolist (buffer (buffer-list))
+             (with-current-buffer buffer
+               (when blame-reveal-mode
+                 ;; Clear and recreate header
+                 (when blame-reveal--header-overlay
+                   (delete-overlay blame-reveal--header-overlay)
+                   (setq blame-reveal--header-overlay nil))
+                 ;; Force header update
+                 (blame-reveal--update-header-impl))))))
   :group 'blame-reveal)
 
 
@@ -1654,12 +1682,16 @@ Returns:
 
 (defun blame-reveal--get-header-line-count ()
   "Get the number of lines the header overlay occupies.
-Based on current display layout setting."
-  (pcase blame-reveal-display-layout
-    ('line 2)      ; message line + fringe line
-    ('compact 3)   ; message + metadata + fringe
-    ('full 5)      ; message + metadata + description + fringe
-    (_ 3)))
+Based on current display layout and position settings."
+  (if (eq blame-reveal-header-position 'after-first-line)
+      ;; After first line: always single line + fringe
+      2
+    ;; Before block: original multi-line format
+    (pcase blame-reveal-display-layout
+      ('line 2)      ; message line + fringe line
+      ('compact 3)   ; message + metadata + fringe
+      ('full 5)      ; message + metadata + description + fringe
+      (_ 3))))
 
 (defun blame-reveal--is-header-visible-p (block-start-line window-start-line)
   "Check if header at BLOCK-START-LINE is visible given WINDOW-START-LINE.
@@ -1709,52 +1741,107 @@ Returns t if all conditions are met:
       ;; Show if header is off-screen AND cursor is in THIS block
       (and (not header-visible) in-this-block))))
 
+(defun blame-reveal--create-header-overlay-inline (line-number commit-hash color &optional no-fringe)
+  "Create inline header at end of LINE-NUMBER (after-first-line mode).
+The overlay is positioned at the end of the first line of the block.
+COLOR is used for header text foreground.
+If NO-FRINGE is non-nil, don't show fringe indicators."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line-number))
+    (unless (eobp)
+      (let ((pos (line-end-position)))
+        (let* ((overlay (make-overlay pos pos))
+               (header-text (blame-reveal--format-header-text commit-hash t))
+               (fringe-face (blame-reveal--ensure-fringe-face color))
+               (faces (blame-reveal--get-header-faces color))
+               ;; For inline mode, use metadata face for the compact line
+               (inline-face (plist-get faces :header)))
+          (overlay-put overlay 'blame-reveal t)
+          (overlay-put overlay 'blame-reveal-commit commit-hash)
+          (overlay-put overlay 'blame-reveal-header t)
+          ;; CRITICAL: Use after-string to place content AFTER the line
+          (overlay-put overlay 'after-string
+                       (concat
+                        ;; Two spaces for fixed distance from code
+                        "  "
+                        ;; Header text with appropriate face
+                        (propertize header-text 'face inline-face)
+                        ;; Fringe indicator on next line
+                        (unless no-fringe
+                          (propertize "!" 'display
+                                      (list blame-reveal-style
+                                            'blame-reveal-full
+                                            fringe-face)))))
+          overlay)))))
+
 (defun blame-reveal--create-sticky-header-overlay (commit-hash)
   "Create sticky header overlay for COMMIT-HASH at window top.
+Adapts format based on `blame-reveal-header-position'.
 Returns the created overlay."
   (save-excursion
     (goto-char (window-start))
     (pcase-let* ((pos (line-beginning-position))
                  (`(,color ,_is-uncommitted ,_is-old-commit ,hide-fringe)
                   (blame-reveal--get-commit-display-info commit-hash))
-                 (header-text (blame-reveal--format-header-text commit-hash))
+                 (is-inline (eq blame-reveal-header-position 'after-first-line))
+                 (header-text (blame-reveal--format-header-text commit-hash is-inline))
                  (overlay (make-overlay pos pos))
                  (fringe-face (blame-reveal--ensure-fringe-face color))
                  (faces (blame-reveal--get-header-faces color))
-                 (header-face (plist-get faces :header))
-                 (metadata-face (plist-get faces :metadata))
-                 (header-lines (split-string header-text "\n"))
                  (sticky-indicator (propertize " " 'face `(:foreground ,color))))
 
       (overlay-put overlay 'blame-reveal-sticky t)
-      (overlay-put overlay 'before-string
-                   (concat
-                    ;; First line with fringe
-                    (unless hide-fringe
-                      (propertize "!" 'display
-                                  (list blame-reveal-style
-                                        'blame-reveal-full
-                                        fringe-face)))
-                    sticky-indicator
-                    (propertize (car header-lines) 'face header-face)
-                    "\n"
-                    ;; Second line with fringe (if exists)
-                    (when (cdr header-lines)
-                      (concat
-                       (unless hide-fringe
-                         (propertize "!" 'display
-                                     (list blame-reveal-style
-                                           'blame-reveal-full
-                                           fringe-face)))
-                       sticky-indicator
-                       (propertize (cadr header-lines) 'face metadata-face)
-                       "\n"))
-                    ;; Final fringe line
-                    (unless hide-fringe
-                      (propertize "!" 'display
-                                  (list blame-reveal-style
-                                        'blame-reveal-full
-                                        fringe-face)))))
+
+      (if is-inline
+          ;; Inline mode: single line format positioned at END of first visible line
+          (let ((inline-face (plist-get faces :header))
+                (line-end (line-end-position)))
+            ;; Move overlay to end of line for inline style
+            (move-overlay overlay line-end line-end)
+            (overlay-put overlay 'after-string
+                         (concat
+                          ;; Two spaces for distance from code
+                          "  "
+                          sticky-indicator
+                          ;; Header text
+                          (propertize header-text 'face inline-face)
+                          ;; Fringe on next line
+                          (unless hide-fringe
+                            (propertize "!" 'display
+                                        (list blame-reveal-style
+                                              'blame-reveal-full
+                                              fringe-face))))))
+
+        ;; Normal mode: multi-line format at beginning of line
+        (let ((header-face (plist-get faces :header))
+              (metadata-face (plist-get faces :metadata))
+              (header-lines (split-string header-text "\n")))
+          (overlay-put overlay 'before-string
+                       (concat
+                        (unless hide-fringe
+                          (propertize "!" 'display
+                                      (list blame-reveal-style
+                                            'blame-reveal-full
+                                            fringe-face)))
+                        sticky-indicator
+                        (propertize (car header-lines) 'face header-face)
+                        "\n"
+                        (when (cdr header-lines)
+                          (concat
+                           (unless hide-fringe
+                             (propertize "!" 'display
+                                         (list blame-reveal-style
+                                               'blame-reveal-full
+                                               fringe-face)))
+                           sticky-indicator
+                           (propertize (cadr header-lines) 'face metadata-face)
+                           "\n"))
+                        (unless hide-fringe
+                          (propertize "!" 'display
+                                      (list blame-reveal-style
+                                            'blame-reveal-full
+                                            fringe-face)))))))
       overlay)))
 
 (defun blame-reveal--update-sticky-header ()
@@ -1848,11 +1935,17 @@ Returns (START-LINE . END-LINE)."
                                        fringe-face)))
         overlay))))
 
-(defun blame-reveal--format-header-text (commit-hash)
-  "Format header text for COMMIT-HASH based on `blame-reveal-display-layout'."
+(defun blame-reveal--format-header-text (commit-hash &optional inline-mode)
+  "Format header text for COMMIT-HASH based on `blame-reveal-display-layout'.
+If INLINE-MODE is non-nil, format for after-first-line position:
+  - `compact' becomes single line: msg · author · hash
+  - `line' shows only message
+  - `full' falls back to compact single line"
   ;; Check if this is an uncommitted change (all zeros)
   (if (blame-reveal--is-uncommitted-p commit-hash)
-      (format "▸ %s" blame-reveal-uncommitted-label)
+      (if inline-mode
+          (format "%s" blame-reveal-uncommitted-label)
+        (format "▸ %s" blame-reveal-uncommitted-label))
     (let ((info (gethash commit-hash blame-reveal--commit-info)))
       (if info
           (let ((short-hash (nth 0 info))
@@ -1860,102 +1953,106 @@ Returns (START-LINE . END-LINE)."
                 (date (nth 2 info))
                 (summary (nth 3 info))
                 (description (nth 5 info)))
-            (pcase blame-reveal-display-layout
-              ('line
-               ;; Only commit message
-               (format "▸ %s" summary))
-              ('compact
-               ;; Commit message + metadata (2 lines)
-               (format "▸ %s\n  %s · %s · %s"
-                       summary short-hash author date))
-              ('full
-               ;; Commit message + metadata + description
-               (let ((desc-trimmed (if description (string-trim description) "")))
-                 (if (and desc-trimmed (not (string-empty-p desc-trimmed)))
-                     (let ((desc-lines (split-string desc-trimmed "\n")))
-                       (format "▸ %s\n  %s · %s · %s\n\n%s"
-                               summary short-hash author date
-                               (mapconcat (lambda (line) (concat "  " line))
-                                          desc-lines
-                                          "\n")))
-                   ;; No description, fall back to compact format
-                   (format "▸ %s\n  %s · %s · %s"
-                           summary short-hash author date))))
-              (_ (format "▸ %s" summary))))
+            (if inline-mode
+                ;; Inline mode: compact single-line formats without ▸ prefix
+                (pcase blame-reveal-display-layout
+                  ('line
+                   ;; Only commit message
+                   (format "▸ [%s]" summary))
+                  ((or 'compact 'full)
+                   ;; Single line: msg · author · hash
+                   (format "▸ [%s · %s · %s]" summary author short-hash))
+                  (_ (format "%s" summary)))
+              ;; Normal mode: original multi-line formats with ▸ prefix
+              (pcase blame-reveal-display-layout
+                ('line
+                 (format "▸ %s" summary))
+                ('compact
+                 (format "▸ %s\n  %s · %s · %s"
+                         summary short-hash author date))
+                ('full
+                 (let ((desc-trimmed (if description (string-trim description) "")))
+                   (if (and desc-trimmed (not (string-empty-p desc-trimmed)))
+                       (let ((desc-lines (split-string desc-trimmed "\n")))
+                         (format "▸ %s\n  %s · %s · %s\n\n%s"
+                                 summary short-hash author date
+                                 (mapconcat (lambda (line) (concat "  " line))
+                                            desc-lines
+                                            "\n")))
+                     (format "▸ %s\n  %s · %s · %s"
+                             summary short-hash author date))))
+                (_ (format "▸ %s" summary)))))
         ;; Fallback for missing info
-        (format "▸ Commit %s" (substring commit-hash 0 8))))))
+        (if inline-mode
+            (format "Commit %s" (substring commit-hash 0 8))
+          (format "▸ Commit %s" (substring commit-hash 0 8)))))))
 
 (defun blame-reveal--create-header-overlay (line-number commit-hash color &optional no-fringe)
-  "Create header line above LINE-NUMBER with fringe.
-The overlay is inserted at the end of the previous line (or beginning of buffer
-if LINE-NUMBER is 1) to avoid disrupting diff-hl indicators on LINE-NUMBER.
-COLOR is the fringe color, which will also be used for header text foreground.
+  "Create header line for commit block based on `blame-reveal-header-position'.
+LINE-NUMBER is the first line of the commit block.
+COLOR is the fringe/header color.
 If NO-FRINGE is non-nil, don't show fringe indicators."
-  (save-excursion
-    (goto-char (point-min))
-    (forward-line (1- line-number))
-    (unless (eobp)
-      ;; For line 1, use beginning of buffer
-      ;; For other lines, use end of previous line
-      (let ((pos (if (= line-number 1)
-                     (point-min)
-                   (progn
-                     (forward-line -1)
-                     (line-end-position)))))
-        (let* ((overlay (make-overlay pos pos))
-               (header-text (blame-reveal--format-header-text commit-hash))
-               (fringe-face (blame-reveal--ensure-fringe-face color))
-               (faces (blame-reveal--get-header-faces color))
-               (header-face (plist-get faces :header))
-               (metadata-face (plist-get faces :metadata))
-               (description-face (plist-get faces :description))
-               ;; Split header text into lines
-               (header-lines (split-string header-text "\n"))
-               ;; Need leading newline if inserting at end of line (except for line 1)
-               (need-leading-newline (not (= line-number 1))))
-          (overlay-put overlay 'blame-reveal t)
-          (overlay-put overlay 'blame-reveal-commit commit-hash)
-          (overlay-put overlay 'blame-reveal-header t)
-          (overlay-put overlay 'before-string
-                       (concat
-                        ;; Leading newline to separate from previous line's content
-                        (when need-leading-newline "\n")
-                        ;; First line with optional fringe
-                        (unless no-fringe
-                          (propertize "!" 'display
-                                      (list blame-reveal-style
-                                            'blame-reveal-full
-                                            fringe-face)))
-                        (propertize (car header-lines) 'face header-face)
-                        "\n"
-                        ;; Additional lines
-                        (when (cdr header-lines)
-                          (let ((remaining-lines (cdr header-lines))
-                                (result ""))
-                            (dotimes (i (length remaining-lines))
-                              (let* ((line (nth i remaining-lines))
-                                     (line-face (if (and (eq blame-reveal-display-layout 'full)
-                                                         (> i 0)
-                                                         (not (string-empty-p (string-trim line))))
-                                                    description-face
-                                                  metadata-face)))
-                                (setq result
-                                      (concat result
-                                              (unless no-fringe
-                                                (propertize "!" 'display
-                                                            (list blame-reveal-style
-                                                                  'blame-reveal-full
-                                                                  fringe-face)))
-                                              (propertize line 'face line-face)
-                                              "\n"))))
-                            result))
-                        ;; Final fringe line
-                        (unless no-fringe
-                          (propertize "!" 'display
-                                      (list blame-reveal-style
-                                            'blame-reveal-full
-                                            fringe-face)))))
-          overlay)))))
+  (if (eq blame-reveal-header-position 'after-first-line)
+      ;; Use inline mode (after first line)
+      (blame-reveal--create-header-overlay-inline line-number commit-hash color no-fringe)
+    ;; Use original mode (before block)
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- line-number))
+      (unless (eobp)
+        (let ((pos (if (= line-number 1)
+                       (point-min)
+                     (progn
+                       (forward-line -1)
+                       (line-end-position)))))
+          (let* ((overlay (make-overlay pos pos))
+                 (header-text (blame-reveal--format-header-text commit-hash nil))
+                 (fringe-face (blame-reveal--ensure-fringe-face color))
+                 (faces (blame-reveal--get-header-faces color))
+                 (header-face (plist-get faces :header))
+                 (metadata-face (plist-get faces :metadata))
+                 (description-face (plist-get faces :description))
+                 (header-lines (split-string header-text "\n"))
+                 (need-leading-newline (not (= line-number 1))))
+            (overlay-put overlay 'blame-reveal t)
+            (overlay-put overlay 'blame-reveal-commit commit-hash)
+            (overlay-put overlay 'blame-reveal-header t)
+            (overlay-put overlay 'before-string
+                         (concat
+                          (when need-leading-newline "\n")
+                          (unless no-fringe
+                            (propertize "!" 'display
+                                        (list blame-reveal-style
+                                              'blame-reveal-full
+                                              fringe-face)))
+                          (propertize (car header-lines) 'face header-face)
+                          "\n"
+                          (when (cdr header-lines)
+                            (let ((remaining-lines (cdr header-lines))
+                                  (result ""))
+                              (dotimes (i (length remaining-lines))
+                                (let* ((line (nth i remaining-lines))
+                                       (line-face (if (and (eq blame-reveal-display-layout 'full)
+                                                           (> i 0)
+                                                           (not (string-empty-p (string-trim line))))
+                                                      description-face
+                                                    metadata-face)))
+                                  (setq result
+                                        (concat result
+                                                (unless no-fringe
+                                                  (propertize "!" 'display
+                                                              (list blame-reveal-style
+                                                                    'blame-reveal-full
+                                                                    fringe-face)))
+                                                (propertize line 'face line-face)
+                                                "\n"))))
+                              result))
+                          (unless no-fringe
+                            (propertize "!" 'display
+                                        (list blame-reveal-style
+                                              'blame-reveal-full
+                                              fringe-face)))))
+            overlay))))))
 
 (defun blame-reveal--clear-overlays ()
   "Remove all blame-reveal overlays."
