@@ -123,6 +123,9 @@ This is an implementation detail and should not be customized by users.")
 (defvar-local blame-reveal--current-block-commit nil
   "Commit hash of the currently highlighted block.")
 
+(defvar-local blame-reveal--margin-width 24
+  "Left margin width for IDEA style commit message. Default is 20 char width.")
+
 
 ;;;; Data Cache Variables
 
@@ -1477,6 +1480,19 @@ The days limit comes from `blame-reveal-recent-days-limit':
       (setq blame-reveal--recent-commits
             (mapcar #'car commit-timestamps)))))
 
+
+(defun blame-reveal--update-margin-overlay (ov color commit-msg)
+  "还没开始用."
+  (overlay-put
+   ov 'before-string
+   (propertize
+    "o" 'display
+    (list (list 'margin 'left-margin)
+          (propertize (concat commit-msg
+                              (make-string (max 0 (- blame-reveal--margin-width (length commit-msg))) ?\s))
+                      'face color)))))
+
+
 (defun blame-reveal--auto-calculate-days-limit ()
   "Automatically calculate days limit for optimal color gradient.
 
@@ -1845,17 +1861,15 @@ Returns (START-LINE . END-LINE)."
              (short-id  (nth 0 commit-info))
              (author  (nth 1 commit-info))
              (date  (nth 2 commit-info))
-             )
+             (commit-msg (concat date " " author)))
         (overlay-put overlay 'blame-reveal t)
         (overlay-put overlay 'blame-reveal-commit commit-hash)
         (overlay-put overlay 'before-string
-        ;; (overlay-put overlay 'display
-                     ;; (propertize (concat date " " author " ") 'display
-                     (propertize (concat date " " author " ") 'face
-                                 ;; (list fringe-face)))
-                                 (list blame-reveal-style
-                                       'blame-reveal-full
-                                       fringe-face)))
+                     (propertize "o" 'display
+                                 (list (list 'margin 'left-margin)
+                                       (propertize (concat commit-msg
+                                                           (make-string (max 0 (- blame-reveal--margin-width (length commit-msg))) ?\s))
+                                                   'face fringe-face))))
         overlay))))
 
 (defun blame-reveal--format-header-text (commit-hash)
@@ -2053,8 +2067,7 @@ Reuses existing overlays when possible to minimize visual disruption."
                (short-id  (nth 0 commit-info))
                (author  (nth 1 commit-info))
                (date  (nth 2 commit-info))
-               )
-
+               (commit-msg (concat date " " author)))
           ;; Skip uncommitted changes unless explicitly enabled
           (unless (and (blame-reveal--is-uncommitted-p commit-hash)
                        (not blame-reveal-show-uncommitted-fringe))
@@ -2076,13 +2089,12 @@ Reuses existing overlays when possible to minimize visual disruption."
                             (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
                               (overlay-put existing-ov 'blame-reveal-commit commit-hash)
                               (overlay-put existing-ov 'before-string
-                              ;; (overlay-put existing-ov 'display
-                                           (propertize "!" 'display
-                                           ;; (propertize (concat date " " author " ") 'display
-                                           ;; (propertize (concat date " " author " ") 'face
-                                                       (list blame-reveal-style
-                                                             'blame-reveal-full
-                                                             fringe-face))))
+                                           (propertize "o" 'display
+                                                       (list (list 'margin 'left-margin)
+                                                             (propertize
+                                                              (concat commit-msg
+                                                                      (make-string (max 0 (- blame-reveal--margin-width (length commit-msg))) ?\s))
+                                                              'face fringe-face)))))
                             (puthash existing-ov t used-overlays)
                             (push existing-ov new-overlays))
 
@@ -2090,11 +2102,6 @@ Reuses existing overlays when possible to minimize visual disruption."
                         (when-let ((new-ov (blame-reveal--create-fringe-overlay
                                             line-num color commit-hash)))
                           (push new-ov new-overlays)))
-
-                        ;; ;; Create new overlay
-                        ;; (when-let ((new-ov (blame-reveal--create-fringe-overlay
-                        ;;                     line-num color commit-hash)))
-                        ;;   (push new-ov new-overlays)))
                       ))))))))
 
       ;; Delete overlays outside visible range or unused
@@ -2922,6 +2929,10 @@ This function always uses built-in git."
             ;; Load blame data (sync or async based on config)
             (blame-reveal--load-blame-data)
 
+            (setq left-margin-width blame-reveal--margin-width)
+            (message "blame-reveal-mode left-margin-width: %d" left-margin-width)
+            (set-window-buffer (selected-window) (current-buffer))
+
             (add-hook 'after-save-hook #'blame-reveal--full-update nil t)
             (add-hook 'window-scroll-functions #'blame-reveal--scroll-handler nil t)
             (add-hook 'post-command-hook #'blame-reveal--update-header nil t)
@@ -2935,6 +2946,10 @@ This function always uses built-in git."
             (blame-reveal--setup-theme-advice))))
 
     ;; Cleanup
+
+    (setq left-margin-width 0)
+    (set-window-buffer (selected-window) (current-buffer))
+
     (setq emulation-mode-map-alists
           (delq 'blame-reveal--emulation-alist
                 emulation-mode-map-alists))
