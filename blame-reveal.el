@@ -219,27 +219,210 @@ Each element is a plist with :revision, :line, :blame-data, :commit-info, etc.")
   "Display string for current revision (for mode line).")
 
 
-;;;; Async Loading State Variables
+;;;; Header Formatting System 
 
-;; (defvar-local blame-reveal--expansion-process nil
-;;   "Background process for expanding blame data.")
+(cl-defstruct blame-reveal-commit-display
+  "Formatted commit information for display."
+  lines              ; List of strings (each line of header)
+  faces              ; List of faces (one per line)
+  color)             ; Base color for fringe
 
-;; (defvar-local blame-reveal--pending-expansion nil
-;;   "Pending expansion range: (START-LINE . END-LINE).")
+(defun blame-reveal-format-header-default (commit-hash commit-info color)
+  "Default header formatter - simple one-line format.
+COMMIT-HASH: commit hash string
+COMMIT-INFO: list (short-hash author date summary timestamp description)
+COLOR: base color for this commit
 
-;; (defvar-local blame-reveal--expansion-buffer nil
-;;   "Temporary buffer for expansion output.")
+Returns `blame-reveal-commit-display' struct.
 
-;; (defvar-local blame-reveal--is-expanding nil
-;;   "Flag indicating if blame data is being expanded.
-;; When t, suppress scroll-triggered rendering to avoid flicker.")
+The default format is a compact single line:
+  ▸ summary · hash · author
 
-;; (defvar-local blame-reveal--initial-load-process nil
-;;   "Background process for initial blame data loading.")
+For more elaborate formats, see examples below."
+  (if (string-match-p "^0+$" commit-hash)  ; Uncommitted changes
+      (make-blame-reveal-commit-display
+       :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+       :faces (list `(:foreground ,color :weight bold))
+       :color color)
+    
+    ;; Normal commit: simple one-line format
+    (pcase-let ((`(,short-hash ,author ,_date ,summary ,_timestamp ,_description) commit-info))
+      (make-blame-reveal-commit-display
+       :lines (list (format "▸ %s · %s · %s" summary short-hash author))
+       :faces (list `(:foreground ,color :weight bold))
+       :color color))))
 
-;; (defvar-local blame-reveal--initial-load-buffer nil
-;;   "Temporary buffer for initial load output.")
 
+;;;; Header Format Examples
+
+;; Example 1: Multi-line with metadata (compact style)
+;; Shows message on first line, metadata on second line
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground ,color :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,date ,msg ,_ ,_) info))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list
+;;                  (format "▸ %s" msg)
+;;                  (format "  %s · %s · %s" hash author date))
+;;          :faces (list
+;;                  `(:foreground ,color :weight bold :height 1.0)
+;;                  `(:foreground ,color :weight normal :height 0.9))
+;;          :color color)))))
+
+;; Example 2: With description (full style)
+;; Includes commit description if available
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground ,color :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,date ,msg ,_ ,desc) info))
+;;         (let ((lines (list
+;;                       (format "▸ %s" msg)
+;;                       (format "  %s · %s · %s" hash author date)))
+;;               (faces (list
+;;                       `(:foreground ,color :weight bold :height 1.0)
+;;                       `(:foreground ,color :weight normal :height 0.9))))
+;;           ;; Add description if present
+;;           (when (and desc (not (string-empty-p (string-trim desc))))
+;;             (dolist (line (split-string (string-trim desc) "\n"))
+;;               (push (format "  %s" line) lines)
+;;               (push `(:foreground ,color :height 0.9 :slant italic) faces)))
+;;           (make-blame-reveal-commit-display
+;;            :lines (nreverse lines)
+;;            :faces (nreverse faces)
+;;            :color color))))))
+
+;; Example 3: Box style with custom borders
+;; Uses Unicode box-drawing characters
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "⚠ %s" blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground ,color :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,date ,msg ,_ ,_) info))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list
+;;                  (format "┌─ %s" msg)
+;;                  (format "├─ %s · %s" author date)
+;;                  (format "└─ %s" hash))
+;;          :faces (list
+;;                  `(:foreground ,color :weight bold)
+;;                  `(:foreground ,color)
+;;                  `(:foreground ,color :family "monospace"))
+;;          :color color)))))
+
+;; Example 4: With all-the-icons (requires all-the-icons package)
+;; Adds visual icons to the header
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (require 'all-the-icons)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "%s %s"
+;;                              (all-the-icons-octicon "alert" :v-adjust 0.0)
+;;                              blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground ,color :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,date ,msg ,_ ,_) info))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list
+;;                  (format "%s %s"
+;;                         (all-the-icons-octicon "git-commit" :v-adjust 0.0)
+;;                         msg)
+;;                  (format "%s %s  %s %s"
+;;                         (all-the-icons-octicon "person" :v-adjust 0.0)
+;;                         author
+;;                         (all-the-icons-octicon "calendar" :v-adjust 0.0)
+;;                         date))
+;;          :faces (list
+;;                  `(:foreground ,color :weight bold)
+;;                  `(:foreground ,color :height 0.9))
+;;          :color color)))))
+
+;; Example 5: Minimalist (hash and message only)
+;; Ultra-compact format
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list "Uncommitted")
+;;          :faces (list `(:foreground ,color))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,_ ,_ ,msg ,_ ,_) info))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "[%s] %s" hash msg))
+;;          :faces (list `(:foreground ,color))
+;;          :color color)))))
+
+;; Example 6: Relative time instead of absolute date
+;; Shows how long ago the commit was made
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground ,color :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,_ ,msg ,timestamp ,_) info))
+;;         (let* ((now (float-time))
+;;                (age (- now timestamp))
+;;                (days (floor (/ age 86400)))
+;;                (time-str (cond
+;;                          ((< days 1) "today")
+;;                          ((< days 2) "yesterday")
+;;                          ((< days 7) (format "%d days ago" days))
+;;                          ((< days 30) (format "%d weeks ago" (/ days 7)))
+;;                          ((< days 365) (format "%d months ago" (/ days 30)))
+;;                          (t (format "%d years ago" (/ days 365))))))
+;;           (make-blame-reveal-commit-display
+;;            :lines (list
+;;                    (format "▸ %s" msg)
+;;                    (format "  %s · %s · %s" hash author time-str))
+;;            :faces (list
+;;                    `(:foreground ,color :weight bold)
+;;                    `(:foreground ,color :height 0.9))
+;;            :color color))))))
+
+;; Example 7: Custom colors per line
+;; Different colors for different parts
+;;
+;; (setq blame-reveal-header-format-function
+;;   (lambda (commit-hash info color)
+;;     (if (string-match-p "^0+$" commit-hash)
+;;         (make-blame-reveal-commit-display
+;;          :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+;;          :faces (list `(:foreground "#ff6b6b" :weight bold))
+;;          :color color)
+;;       (pcase-let ((`(,hash ,author ,date ,msg ,_ ,_) info))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list
+;;                  (format "▸ %s" msg)
+;;                  (format "  %s" hash)
+;;                  (format "  %s · %s" author date))
+;;          :faces (list
+;;                  `(:foreground ,color :weight bold)              ; message in commit color
+;;                  `(:foreground "#888888" :family "monospace")    ; hash in gray
+;;                  `(:foreground "#6c9ef8"))                       ; metadata in blue
+;;          :color color)))))
+
+;; To use any example, copy the code and evaluate it, or add it to your init file.
+;; You can also mix and match elements from different examples.
 
 ;;;; Customization Group
 
@@ -260,6 +443,36 @@ See all options: M-x customize-group RET blame-reveal"
   :group 'vc
   :prefix "blame-reveal-")
 
+(defcustom blame-reveal-header-format-function
+  #'blame-reveal-format-header-default
+  "Function to format commit information for header display.
+
+The function should accept three arguments:
+  COMMIT-HASH: commit hash string
+  COMMIT-INFO: commit info tuple (short-hash author date summary timestamp description)
+  COLOR: base color for this commit (hex string)
+
+And return a `blame-reveal-commit-display' struct with:
+  :lines - List of strings (one per line)
+  :faces - List of faces (one per line, can reference COLOR)
+  :color - Base color for fringe indicators
+
+The system automatically adapts for different contexts:
+  - Normal header: shows full multi-line format
+  - Inline header: auto-compresses to single line
+  - Sticky header: reuses appropriate format
+
+Example: Minimal style
+  (setq blame-reveal-header-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((`(,hash ,_author ,_date ,msg ,_ ,_) info))
+        (make-blame-reveal-commit-display
+         :lines (list (format \"%s: %s\" hash msg))
+         :faces (list \\=`(:foreground ,color))
+         :color color))))"
+  :type 'function
+  :group 'blame-reveal)
+
 
 ;;;; Display Customization
 
@@ -267,76 +480,6 @@ See all options: M-x customize-group RET blame-reveal"
   "Which fringe to use for blame indicators."
   :type '(choice (const left-fringe)
                  (const right-fringe))
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-display-layout 'compact
-  "Format for commit message header.
-- `none': no header (only fringe indicators, use 's' to view details)
-- `line': show only the commit message line
-- `compact': show message + metadata (hash, author, date)
-- `full': show message + metadata + description
-
-When set to `none', no header overlay is created when cursor moves
-between blocks, providing a cleaner visual experience. You can still
-view commit details using `blame-reveal-show-commit-details' (s key)."
-  :type '(choice (const :tag "No header (fringe only)" none)
-                 (const :tag "Message line only" line)
-                 (const :tag "Message + metadata" compact)
-                 (const :tag "Message + metadata + description" full))
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-display-style 'background
-  "Style for commit message header.
-- 'background: No background color
-- 'box: Use box border
-- 'inverse: Inverse video"
-  :type '(choice (const background)
-                 (const box)
-                 (const inverse))
-  :group 'blame-reveal)
-
-;;;; Typography Customization
-
-(defcustom blame-reveal-header-weight 'bold
-  "Font weight for the commit message line in blame header."
-  :type '(choice (const :tag "Bold" bold)
-                 (const :tag "Normal" normal)
-                 (const :tag "Semi-bold" semi-bold)
-                 (const :tag "Extra-bold" extra-bold))
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-header-height 1.0
-  "Font height for the commit message line in blame header.
-1.0 means default size, 0.9 means 90% of default, 1.1 means 110%."
-  :type 'number
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-metadata-weight 'normal
-  "Font weight for the metadata line in blame header (hash, author, date)."
-  :type '(choice (const :tag "Bold" bold)
-                 (const :tag "Normal" normal)
-                 (const :tag "Semi-bold" semi-bold)
-                 (const :tag "Light" light))
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-metadata-height 0.9
-  "Font height for the metadata line in blame header (hash, author, date).
-1.0 means default size, 0.9 means 90% of default, 1.1 means 110%."
-  :type 'number
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-description-weight 'normal
-  "Font weight for the description lines in blame header."
-  :type '(choice (const :tag "Bold" bold)
-                 (const :tag "Normal" normal)
-                 (const :tag "Semi-bold" semi-bold)
-                 (const :tag "Light" light))
-  :group 'blame-reveal)
-
-(defcustom blame-reveal-description-height 0.9
-  "Font height for the description lines in blame header.
-1.0 means default size, 0.9 means 90% of default, 1.1 means 110%."
-  :type 'number
   :group 'blame-reveal)
 
 (defcustom blame-reveal-header-position 'before-block
@@ -1209,41 +1352,33 @@ Only renders in visible range."
 ;;;; Event Handlers (Updated)
 
 (defun blame-reveal--update-header-impl ()
-  "Implementation of header update (v2 with unified overlay management)."
+  "Implementation of header update (using unified header system)."
   (when blame-reveal--blame-data
-    ;; First, ensure visible commits have their info loaded
     (blame-reveal--ensure-visible-commits-loaded)
 
     (if-let ((current-block (blame-reveal--get-current-block)))
-        ;; Has block: render header and overlays
         (let* ((commit-hash (car current-block))
                (block-start (cdr current-block)))
 
-          ;; If entered a new block
           (unless (equal commit-hash blame-reveal--current-block-commit)
             (setq blame-reveal--current-block-commit commit-hash))
 
-          ;; Only render the current block when stopped
           (pcase-let ((`(,color ,is-uncommitted ,is-old-commit ,hide-header-fringe)
                        (blame-reveal--get-commit-display-info commit-hash)))
 
-            ;; Cancel any pending temp overlay rendering
             (when blame-reveal--temp-overlay-timer
               (cancel-timer blame-reveal--temp-overlay-timer)
               (setq blame-reveal--temp-overlay-timer nil))
 
-            ;; Clear previous header (will be replaced by header overlay system later)
             (when blame-reveal--header-overlay
               (delete-overlay blame-reveal--header-overlay)
               (setq blame-reveal--header-overlay nil))
 
-            ;; Create new header only if layout is not 'none
-            (unless (eq blame-reveal-display-layout 'none)
-              (setq blame-reveal--header-overlay
-                    (blame-reveal--create-header-overlay
-                     block-start commit-hash color hide-header-fringe)))
+            ;; 用户通过格式化函数控制显示内容
+            (setq blame-reveal--header-overlay
+                  (blame-reveal--create-header-overlay
+                   block-start commit-hash color hide-header-fringe))
 
-            ;; Show temp fringe overlay for old commits or uncommitted changes
             (when (or is-old-commit
                       (and is-uncommitted blame-reveal-show-uncommitted-fringe))
               (setq blame-reveal--temp-overlay-timer
@@ -1253,7 +1388,6 @@ Only renders in visible range."
                      (current-buffer) commit-hash color)))
             (setq blame-reveal--last-rendered-commit commit-hash)))
 
-      ;; No current block - completely left all blocks - CLEANUP!
       (when blame-reveal--temp-overlay-timer
         (cancel-timer blame-reveal--temp-overlay-timer)
         (setq blame-reveal--temp-overlay-timer nil))
@@ -1264,9 +1398,7 @@ Only renders in visible range."
       (setq blame-reveal--current-block-commit nil)
       (setq blame-reveal--last-rendered-commit nil))
 
-    ;; Only update sticky header if layout is not 'none
-    (unless (eq blame-reveal-display-layout 'none)
-      (blame-reveal--update-sticky-header))))
+    (blame-reveal--update-sticky-header)))
 
 ;;;; Updated Clear Functions
 
@@ -1284,6 +1416,42 @@ Only renders in visible range."
 
 
 ;;;; Helper Functions
+
+;;;; Format Conversion
+
+(defun blame-reveal--compress-to-inline (display)
+  "Compress DISPLAY to single-line format for inline mode.
+Takes a `blame-reveal-commit-display' and returns a new one with single line."
+  (let* ((lines (blame-reveal-commit-display-lines display))
+         (color (blame-reveal-commit-display-color display))
+         ;; Extract first two non-empty lines
+         (non-empty-lines (cl-remove-if 
+                           (lambda (s) (or (null s) (string-empty-p s))) 
+                           lines))
+         (message-line (car non-empty-lines))
+         (metadata-line (cadr non-empty-lines))
+         ;; Compress to: ▸ [message · metadata]
+         (compressed (if metadata-line
+                        (format "%s · %s"
+                               (string-trim message-line)
+                               (string-trim metadata-line))
+                      (string-trim message-line))))
+    (make-blame-reveal-commit-display
+     :lines (list compressed)
+     :faces (list `(:foreground ,color :weight bold :height 0.95))
+     :color color)))
+
+(defun blame-reveal--get-formatted-display (commit-hash style)
+  "Get formatted display for COMMIT-HASH in STYLE.
+STYLE: 'normal (multi-line) or 'inline (single-line)
+Returns `blame-reveal-commit-display' struct."
+  (let* ((info (gethash commit-hash blame-reveal--commit-info))
+         (color (blame-reveal--get-commit-color commit-hash))
+         (full-display (funcall blame-reveal-header-format-function
+                               commit-hash info color)))
+    (pcase style
+      ('normal full-display)
+      ('inline (blame-reveal--compress-to-inline full-display)))))
 
 (defun blame-reveal--should-use-async-p ()
   "Determine if async loading should be used based on configuration."
@@ -1307,19 +1475,6 @@ RELATIVE-FILE is the file path relative to git root."
       (setq args (append args (list blame-reveal--current-revision))))
     ;; Add file at the end
     (append args (list relative-file))))
-
-;; (defun blame-reveal--cleanup-async-state (process-var buffer-var)
-;;   "Cleanup async process and buffer.
-;; PROCESS-VAR is the symbol holding the process.
-;; BUFFER-VAR is the symbol holding the buffer."
-;;   (when-let ((proc (symbol-value process-var)))
-;;     (when (process-live-p proc)
-;;       (delete-process proc))
-;;     (set process-var nil))
-;;   (when-let ((buf (symbol-value buffer-var)))
-;;     (when (buffer-live-p buf)
-;;       (kill-buffer buf))
-;;     (set buffer-var nil)))
 
 (defun blame-reveal--make-async-sentinel (source-buffer temp-buffer success-handler
                                                         &optional error-handler)
@@ -1371,44 +1526,35 @@ Simplified version using state machine."
         :noquery t)
        temp-buffer))))
 
-(defun blame-reveal--get-header-faces (color)
-  "Get face definitions for header, metadata, and description with COLOR."
-  (let ((header-weight blame-reveal-header-weight)
-        (header-height blame-reveal-header-height)
-        (metadata-weight blame-reveal-metadata-weight)
-        (metadata-height blame-reveal-metadata-height)
-        (description-weight blame-reveal-description-weight)
-        (description-height blame-reveal-description-height)
-        (bg (face-background 'default)))
-    (pcase blame-reveal-display-style
-      ('background
-       (list :header (list :foreground color :weight header-weight
-                           :height header-height :background bg)
-             :metadata (list :foreground color :weight metadata-weight
-                             :height metadata-height :background bg)
-             :description (list :foreground color :weight description-weight
-                                :height description-height :background bg)))
-      ('box
-       (let ((box-style (list :line-width 1 :color color)))
-         (list :header (list :foreground color :weight header-weight
-                             :height header-height :box box-style :background bg)
-               :metadata (list :foreground color :weight metadata-weight
-                               :height metadata-height :box box-style :background bg)
-               :description (list :foreground color :weight description-weight
-                                  :height description-height :box box-style :background bg))))
-      ('inverse
-       (list :header (list :background color :weight header-weight :height header-height)
-             :metadata (list :background color :weight metadata-weight :height metadata-height)
-             :description (list :background color :weight description-weight
-                                :height description-height)))
-      (_
-       (list :header (list :foreground color :weight header-weight
-                           :height header-height :background bg)
-             :metadata (list :foreground color :weight metadata-weight
-                             :height metadata-height :background bg)
-             :description (list :foreground color :weight description-weight
-                                :height description-height :background bg))))))
+(defun blame-reveal--create-header-overlay (line-number commit-hash color &optional no-fringe)
+  "Create header overlay at LINE for COMMIT.
+Now just a thin wrapper around unified builder."
+  (blame-reveal--build-header
+   (make-blame-reveal-header-context
+    :commit-hash commit-hash
+    :line-number line-number
+    :mode (if (eq blame-reveal-header-position 'after-first-line)
+              'inline
+            'normal)
+    :show-fringe-p (not no-fringe))))
 
+(defun blame-reveal--create-sticky-header-overlay (commit-hash)
+  "Create sticky header for COMMIT-HASH at window top.
+Automatically adapts format based on `blame-reveal-header-position'."
+  (save-excursion
+    (goto-char (window-start))
+    (let* ((is-uncommitted (blame-reveal--is-uncommitted-p commit-hash))
+           ;; Uncommitted: respect blame-reveal-show-uncommitted-fringe
+           ;; Committed: always show fringe for sticky header
+           (show-fringe (if is-uncommitted
+                            blame-reveal-show-uncommitted-fringe
+                          t)))
+      (blame-reveal--build-header
+       (make-blame-reveal-header-context
+        :commit-hash commit-hash
+        :line-number (line-number-at-pos)
+        :mode 'sticky
+        :show-fringe-p show-fringe)))))
 
 ;;;; Loading Animation Functions
 
@@ -2480,16 +2626,17 @@ Returns:
 
 (defun blame-reveal--get-header-line-count ()
   "Get the number of lines the header overlay occupies.
-Based on current display layout and position settings."
+Based on header position and actual formatted content."
   (if (eq blame-reveal-header-position 'after-first-line)
-      ;; After first line: always single line + fringe
+      ;; Inline mode: always 2 (content line + fringe line)
       2
-    ;; Before block: original multi-line format
-    (pcase blame-reveal-display-layout
-      ('line 2)      ; message line + fringe line
-      ('compact 3)   ; message + metadata + fringe
-      ('full 5)      ; message + metadata + description + fringe
-      (_ 3))))
+    ;; Normal mode: count lines from current header overlay
+    (if blame-reveal--header-overlay
+        (let ((str (overlay-get blame-reveal--header-overlay 'before-string)))
+          (if str
+              (1+ (cl-count ?\n str))  ; +1 for final fringe line
+            2))  ; fallback
+      2)))  ; default fallback
 
 (defun blame-reveal--is-header-visible-p (block-start-line window-start-line)
   "Check if header at BLOCK-START-LINE is visible given WINDOW-START-LINE.
@@ -2553,109 +2700,6 @@ Returns t if all conditions are met:
 
       ;; Show if header is off-screen AND cursor is in THIS block
       (and (not header-visible) in-this-block))))
-
-(defun blame-reveal--create-header-overlay-inline (line-number commit-hash color &optional no-fringe)
-  "Create inline header at end of LINE-NUMBER (after-first-line mode).
-The overlay is positioned at the end of the first line of the block.
-COLOR is used for header text foreground.
-If NO-FRINGE is non-nil, don't show fringe indicators."
-  (save-excursion
-    (goto-char (point-min))
-    (forward-line (1- line-number))
-    (unless (eobp)
-      (let ((pos (line-end-position)))
-        (let* ((overlay (make-overlay pos pos))
-               (header-text (blame-reveal--format-header-text commit-hash t))
-               (fringe-face (blame-reveal--ensure-fringe-face color))
-               (faces (blame-reveal--get-header-faces color))
-               ;; For inline mode, use metadata face for the compact line
-               (inline-face (plist-get faces :header)))
-          (overlay-put overlay 'blame-reveal t)
-          (overlay-put overlay 'blame-reveal-commit commit-hash)
-          (overlay-put overlay 'blame-reveal-header t)
-          ;; CRITICAL: Use after-string to place content AFTER the line
-          (overlay-put overlay 'after-string
-                       (concat
-                        ;; Two spaces for fixed distance from code
-                        "  "
-                        ;; Header text with appropriate face
-                        (propertize header-text 'face inline-face)
-                        ;; Fringe indicator on next line
-                        (unless no-fringe
-                          (propertize "!" 'display
-                                      (list blame-reveal-style
-                                            'blame-reveal-full
-                                            fringe-face)))))
-          overlay)))))
-
-(defun blame-reveal--create-sticky-header-overlay (commit-hash)
-  "Create sticky header overlay for COMMIT-HASH at window top.
-Adapts format based on `blame-reveal-header-position'.
-Returns the created overlay."
-  (save-excursion
-    (goto-char (window-start))
-    (pcase-let* ((pos (line-beginning-position))
-                 (`(,color ,_is-uncommitted ,_is-old-commit ,hide-fringe)
-                  (blame-reveal--get-commit-display-info commit-hash))
-                 (is-inline (eq blame-reveal-header-position 'after-first-line))
-                 (header-text (blame-reveal--format-header-text commit-hash is-inline))
-                 (overlay (make-overlay pos pos))
-                 (fringe-face (blame-reveal--ensure-fringe-face color))
-                 (faces (blame-reveal--get-header-faces color))
-                 (sticky-indicator (propertize " " 'face `(:foreground ,color))))
-
-      (overlay-put overlay 'blame-reveal-sticky t)
-
-      (if is-inline
-          ;; Inline mode: single line format positioned at END of first visible line
-          (let ((inline-face (plist-get faces :header))
-                (line-end (line-end-position)))
-            ;; Move overlay to end of line for inline style
-            (move-overlay overlay line-end line-end)
-            (overlay-put overlay 'after-string
-                         (concat
-                          ;; Two spaces for distance from code
-                          "  "
-                          sticky-indicator
-                          ;; Header text
-                          (propertize header-text 'face inline-face)
-                          ;; Fringe on next line
-                          (unless hide-fringe
-                            (propertize "!" 'display
-                                        (list blame-reveal-style
-                                              'blame-reveal-full
-                                              fringe-face))))))
-
-        ;; Normal mode: multi-line format at beginning of line
-        (let ((header-face (plist-get faces :header))
-              (metadata-face (plist-get faces :metadata))
-              (header-lines (split-string header-text "\n")))
-          (overlay-put overlay 'before-string
-                       (concat
-                        (unless hide-fringe
-                          (propertize "!" 'display
-                                      (list blame-reveal-style
-                                            'blame-reveal-full
-                                            fringe-face)))
-                        sticky-indicator
-                        (propertize (car header-lines) 'face header-face)
-                        "\n"
-                        (when (cdr header-lines)
-                          (concat
-                           (unless hide-fringe
-                             (propertize "!" 'display
-                                         (list blame-reveal-style
-                                               'blame-reveal-full
-                                               fringe-face)))
-                           sticky-indicator
-                           (propertize (cadr header-lines) 'face metadata-face)
-                           "\n"))
-                        (unless hide-fringe
-                          (propertize "!" 'display
-                                      (list blame-reveal-style
-                                            'blame-reveal-full
-                                            fringe-face)))))))
-      overlay)))
 
 (defun blame-reveal--update-sticky-header ()
   "Update sticky header display based on cursor position.
@@ -2730,124 +2774,154 @@ Returns (START-LINE . END-LINE)."
                            :group 'blame-reveal))
     face-name))
 
-(defun blame-reveal--format-header-text (commit-hash &optional inline-mode)
-  "Format header text for COMMIT-HASH based on `blame-reveal-display-layout'.
-If INLINE-MODE is non-nil, format for after-first-line position:
-  - `compact' becomes single line: msg · author · hash
-  - `line' shows only message
-  - `full' falls back to compact single line"
-  ;; Check if this is an uncommitted change (all zeros)
-  (if (blame-reveal--is-uncommitted-p commit-hash)
-      (if inline-mode
-          (format "%s" blame-reveal-uncommitted-label)
-        (format "▸ %s" blame-reveal-uncommitted-label))
-    (let ((info (gethash commit-hash blame-reveal--commit-info)))
-      (if info
-          (let ((short-hash (nth 0 info))
-                (author (nth 1 info))
-                (date (nth 2 info))
-                (summary (nth 3 info))
-                (description (nth 5 info)))
-            (if inline-mode
-                ;; Inline mode: compact single-line formats without ▸ prefix
-                (pcase blame-reveal-display-layout
-                  ('line
-                   ;; Only commit message
-                   (format "▸ [%s]" summary))
-                  ((or 'compact 'full)
-                   ;; Single line: msg · author · hash
-                   (format "▸ [%s · %s · %s]" summary author short-hash))
-                  (_ (format "%s" summary)))
-              ;; Normal mode: original multi-line formats with ▸ prefix
-              (pcase blame-reveal-display-layout
-                ('line
-                 (format "▸ %s" summary))
-                ('compact
-                 (format "▸ %s\n  %s · %s · %s"
-                         summary short-hash author date))
-                ('full
-                 (let ((desc-trimmed (if description (string-trim description) "")))
-                   (if (and desc-trimmed (not (string-empty-p desc-trimmed)))
-                       (let ((desc-lines (split-string desc-trimmed "\n")))
-                         (format "▸ %s\n  %s · %s · %s\n\n%s"
-                                 summary short-hash author date
-                                 (mapconcat (lambda (line) (concat "  " line))
-                                            desc-lines
-                                            "\n")))
-                     (format "▸ %s\n  %s · %s · %s"
-                             summary short-hash author date))))
-                (_ (format "▸ %s" summary)))))
-        ;; Fallback for missing info
-        (if inline-mode
-            (format "Commit %s" (substring commit-hash 0 8))
-          (format "▸ Commit %s" (substring commit-hash 0 8)))))))
+;;;; Unified Header Builder (添加到 Overlay Management Functions 区域)
 
-(defun blame-reveal--create-header-overlay (line-number commit-hash color &optional no-fringe)
-  "Create header line for commit block based on `blame-reveal-header-position'.
-LINE-NUMBER is the first line of the commit block.
-COLOR is the fringe/header color.
-If NO-FRINGE is non-nil, don't show fringe indicators."
-  (if (eq blame-reveal-header-position 'after-first-line)
-      ;; Use inline mode (after first line)
-      (blame-reveal--create-header-overlay-inline line-number commit-hash color no-fringe)
-    ;; Use original mode (before block)
-    (save-excursion
-      (goto-char (point-min))
-      (forward-line (1- line-number))
-      (unless (eobp)
-        (let ((pos (if (= line-number 1)
-                       (point-min)
-                     (progn
-                       (forward-line -1)
-                       (line-end-position)))))
-          (let* ((overlay (make-overlay pos pos))
-                 (header-text (blame-reveal--format-header-text commit-hash nil))
-                 (fringe-face (blame-reveal--ensure-fringe-face color))
-                 (faces (blame-reveal--get-header-faces color))
-                 (header-face (plist-get faces :header))
-                 (metadata-face (plist-get faces :metadata))
-                 (description-face (plist-get faces :description))
-                 (header-lines (split-string header-text "\n"))
-                 (need-leading-newline (not (= line-number 1))))
-            (overlay-put overlay 'blame-reveal t)
-            (overlay-put overlay 'blame-reveal-commit commit-hash)
-            (overlay-put overlay 'blame-reveal-header t)
-            (overlay-put overlay 'before-string
-                         (concat
-                          (when need-leading-newline "\n")
-                          (unless no-fringe
-                            (propertize "!" 'display
-                                        (list blame-reveal-style
-                                              'blame-reveal-full
-                                              fringe-face)))
-                          (propertize (car header-lines) 'face header-face)
-                          "\n"
-                          (when (cdr header-lines)
-                            (let ((remaining-lines (cdr header-lines))
-                                  (result ""))
-                              (dotimes (i (length remaining-lines))
-                                (let* ((line (nth i remaining-lines))
-                                       (line-face (if (and (eq blame-reveal-display-layout 'full)
-                                                           (> i 0)
-                                                           (not (string-empty-p (string-trim line))))
-                                                      description-face
-                                                    metadata-face)))
-                                  (setq result
-                                        (concat result
-                                                (unless no-fringe
-                                                  (propertize "!" 'display
-                                                              (list blame-reveal-style
-                                                                    'blame-reveal-full
-                                                                    fringe-face)))
-                                                (propertize line 'face line-face)
-                                                "\n"))))
-                              result))
-                          (unless no-fringe
-                            (propertize "!" 'display
-                                        (list blame-reveal-style
-                                              'blame-reveal-full
-                                              fringe-face)))))
-            overlay))))))
+(cl-defstruct blame-reveal-header-context
+  "Context for building header overlay."
+  commit-hash
+  line-number
+  mode               ; Symbol: 'normal, 'inline, or 'sticky
+  show-fringe-p)
+
+(defun blame-reveal--format-header-string (lines faces fringe-face show-fringe
+                                                 need-leading-newline
+                                                 &optional sticky-indicator)
+  "Format header content string.
+LINES: list of text lines
+FACES: list of faces (one per line)
+FRINGE-FACE: face for fringe indicator
+SHOW-FRINGE: whether to show fringe
+NEED-LEADING-NEWLINE: add newline before content
+STICKY-INDICATOR: optional sticky indicator text"
+  (let ((result (if need-leading-newline "\n" "")))
+    
+    (dotimes (i (length lines))
+      (let ((line (nth i lines))
+            (face (nth i faces)))
+        
+        (when (and line (not (string-empty-p line)))
+          ;; Add fringe indicator
+          (when show-fringe
+            (setq result (concat result
+                                (propertize "!" 'display
+                                          (list blame-reveal-style
+                                                'blame-reveal-full
+                                                fringe-face)))))
+          
+          ;; Add sticky indicator if provided
+          (when sticky-indicator
+            (setq result (concat result sticky-indicator)))
+          
+          ;; Add text line
+          (setq result (concat result
+                              (propertize line 'face face)
+                              "\n")))))
+    
+    ;; Final fringe line
+    (when show-fringe
+      (setq result (concat result
+                          (propertize "!" 'display
+                                    (list blame-reveal-style
+                                          'blame-reveal-full
+                                          fringe-face)))))
+    result))
+
+(defun blame-reveal--build-normal-header (line display fringe-face show-fringe)
+  "Build normal header (before block)."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (let* ((pos (if (= line 1) (point-min)
+                  (progn (forward-line -1) (line-end-position))))
+           (ov (make-overlay pos pos))
+           (need-newline (not (= line 1)))
+           (lines (blame-reveal-commit-display-lines display))
+           (faces (blame-reveal-commit-display-faces display)))
+      
+      (overlay-put ov 'blame-reveal t)
+      (overlay-put ov 'blame-reveal-header t)
+      (overlay-put ov 'before-string
+                   (blame-reveal--format-header-string
+                    lines faces fringe-face show-fringe need-newline))
+      ov)))
+
+(defun blame-reveal--build-inline-header (line display fringe-face show-fringe)
+  "Build inline header (after first line)."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (unless (eobp)
+      (let* ((pos (line-end-position))
+             (ov (make-overlay pos pos))
+             (line-text (car (blame-reveal-commit-display-lines display)))
+             (line-face (car (blame-reveal-commit-display-faces display))))
+        
+        (overlay-put ov 'blame-reveal t)
+        (overlay-put ov 'blame-reveal-header t)
+        (overlay-put ov 'after-string
+                     (concat
+                      "  "  ; Two spaces for distance from code
+                      (propertize line-text 'face line-face)
+                      (when show-fringe
+                        (propertize "\n!" 'display
+                                   (list blame-reveal-style
+                                         'blame-reveal-full
+                                         fringe-face)))))
+        ov))))
+
+(defun blame-reveal--build-sticky-header (display fringe-face show-fringe)
+  "Build sticky header (at window top)."
+  (save-excursion
+    (goto-char (window-start))
+    (let* ((is-inline (eq blame-reveal-header-position 'after-first-line))
+           (pos (if is-inline (line-end-position) (line-beginning-position)))
+           (ov (make-overlay pos pos))
+           (lines (blame-reveal-commit-display-lines display))
+           (faces (blame-reveal-commit-display-faces display))
+           (color (blame-reveal-commit-display-color display))
+           (sticky-indicator (propertize " " 'face `(:foreground ,color))))
+      
+      (overlay-put ov 'blame-reveal-sticky t)
+      
+      (if is-inline
+          ;; Inline sticky: at end of line
+          (overlay-put ov 'after-string
+                       (concat
+                        "  "
+                        sticky-indicator
+                        (propertize (car lines) 'face (car faces))
+                        (when show-fringe
+                          (propertize "\n!" 'display
+                                     (list blame-reveal-style
+                                           'blame-reveal-full
+                                           fringe-face)))))
+        
+        ;; Normal sticky: at beginning of line
+        (overlay-put ov 'before-string
+                     (blame-reveal--format-header-string
+                      lines faces fringe-face show-fringe nil
+                      sticky-indicator)))
+      ov)))
+
+(defun blame-reveal--build-header (context)
+  "Build header overlay from CONTEXT - unified entry point."
+  (let* ((commit (blame-reveal-header-context-commit-hash context))
+         (line (blame-reveal-header-context-line-number context))
+         (mode (blame-reveal-header-context-mode context))
+         (show-fringe (blame-reveal-header-context-show-fringe-p context))
+         
+         ;; Get formatted display (auto-converts for inline)
+         (style (if (eq mode 'inline) 'inline 'normal))
+         (display (blame-reveal--get-formatted-display commit style))
+         
+         (color (blame-reveal-commit-display-color display))
+         (fringe-face (blame-reveal--ensure-fringe-face color)))
+    
+    ;; Build based on mode
+    (pcase mode
+      ('normal  (blame-reveal--build-normal-header line display fringe-face show-fringe))
+      ('inline  (blame-reveal--build-inline-header line display fringe-face show-fringe))
+      ('sticky  (blame-reveal--build-sticky-header display fringe-face show-fringe)))))
 
 ;;;; Rendering Functions
 
@@ -3038,12 +3112,10 @@ Also triggers commit info loading when cursor stops."
                       (> end-line current-end))
               (blame-reveal--ensure-range-loaded start-line end-line))))
         
-        ;; 只在非扩展状态时渲染（状态机管理）
         (unless (and (eq blame-reveal--state-status 'loading)
                      (eq blame-reveal--state-operation 'expansion))
           (blame-reveal--render-visible-region)
-          (unless (eq blame-reveal-display-layout 'none)
-            (blame-reveal--update-sticky-header)))))))
+          (blame-reveal--update-sticky-header))))))
 
 (defun blame-reveal--on-scroll ()
   "Handle scroll event with debouncing.
