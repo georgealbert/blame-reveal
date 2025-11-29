@@ -347,17 +347,7 @@ This minimizes visual disruption during recursive blame."
                     blame-reveal--blame-data
                     start-line
                     end-line))
-           (existing-overlay-map (make-hash-table :test 'equal))
-           (used-overlays (make-hash-table :test 'eq))
-           (new-overlays nil))
-
-      ;; Index existing overlays by line number
-      (dolist (ov blame-reveal--overlays)
-        (when (overlay-buffer ov)
-          (let ((pos (overlay-start ov)))
-            (when pos
-              (let ((line (line-number-at-pos pos)))
-                (puthash line ov existing-overlay-map))))))
+           (rendered-lines (make-hash-table :test 'eql)))
 
       ;; Ensure commit info is loaded for visible blocks
       (dolist (block blocks)
@@ -367,7 +357,7 @@ This minimizes visual disruption during recursive blame."
       ;; Update recent commits based on what's loaded so far
       (blame-reveal--update-recent-commits)
 
-      ;; Render blocks, reusing overlays when possible
+      ;; Render blocks using unified overlay system
       (dolist (block blocks)
         (let* ((block-start (nth 0 block))
                (commit-hash (nth 1 block))
@@ -385,35 +375,18 @@ This minimizes visual disruption during recursive blame."
                 (let ((render-start (max block-start start-line))
                       (render-end (min block-end end-line)))
                   (dotimes (i (- render-end render-start -1))
-                    (let* ((line-num (+ render-start i))
-                           (existing-ov (gethash line-num existing-overlay-map)))
+                    (let ((line-num (+ render-start i)))
+                      ;; Use v2 function for unified management
+                      (blame-reveal--create-fringe-overlay
+                       line-num color commit-hash)
+                      (puthash line-num t rendered-lines)))))))))
 
-                      (if existing-ov
-                          ;; Reuse existing overlay
-                          (progn
-                            (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
-                              (overlay-put existing-ov 'blame-reveal-commit commit-hash)
-                              (overlay-put existing-ov 'before-string
-                                           (propertize "!" 'display
-                                                       (list blame-reveal-style
-                                                             'blame-reveal-full
-                                                             fringe-face))))
-                            (puthash existing-ov t used-overlays)
-                            (push existing-ov new-overlays))
-
-                        ;; Create new overlay
-                        (when-let ((new-ov (blame-reveal--create-fringe-overlay
-                                            line-num color commit-hash)))
-                          (push new-ov new-overlays)))))))))))
-
-      ;; Delete unused old overlays
-      (dolist (ov blame-reveal--overlays)
-        (unless (gethash ov used-overlays)
-          (when (overlay-buffer ov)
-            (delete-overlay ov))))
-
-      ;; Update overlay list
-      (setq blame-reveal--overlays new-overlays)
+      ;; Delete unused overlays (not in rendered-lines)
+      (dolist (overlay (blame-reveal--get-overlays-by-type 'fringe))
+        (when (overlay-buffer overlay)
+          (let ((line (plist-get (blame-reveal--get-overlay-metadata overlay) :line)))
+            (when (and line (not (gethash line rendered-lines)))
+              (blame-reveal--unregister-overlay overlay)))))
 
       ;; Re-trigger header update
       (blame-reveal--update-header))))
