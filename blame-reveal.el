@@ -914,8 +914,9 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
           ;; Get description separately
           (erase-buffer)
           ;; (if (zerop (call-process "git" nil t nil "show"
+                                   ;; "--no-patch"
           (if (zerop (call-process "git" nil t nil "log"
-                                   "--no-patch"
+                                   "--no-walk"
                                    "--format=%b"
                                    commit-hash))
               (list short-hash author date summary timestamp (string-trim (buffer-string)))
