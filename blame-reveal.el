@@ -312,6 +312,11 @@ Left margin width varies proportionally based on this value."
   :type 'number
   :group 'blame-reveal)
 
+(defcustom blame-reveal-margin-time-format "%Y/%m%d"
+  "Format for time strings in left margin."
+  :type 'string
+  :group 'blame-reveal)
+
 
 ;;;; Commit Selection Customization
 
@@ -1497,7 +1502,7 @@ The days limit comes from `blame-reveal-recent-days-limit':
 
 (defun blame-reveal--format-time-string (time tz)
   "Parse time string by timestamp and timezone."
-  (let* ((time-format "%Y/%m/%d")
+  (let* ((time-format blame-reveal-margin-time-format)
          (tz-in-second (and (string-search "%z" time-format)
                             (car (last (parse-time-string tz))))))
     (format-time-string time-format
