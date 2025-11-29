@@ -347,9 +347,10 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
   "Get commit info for COMMIT-HASH.
 Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
   (with-temp-buffer
-    (when (zerop (call-process "git" nil t nil "show"
+    (when (zerop (call-process "git" nil t nil "log"
+                               "--no-walk"
                                "--no-patch"
-                               "--format=%h|%an|%ar|%s|%at"
+                               "--format=%h|%an|%ar|%s|%at%n--BODY--%n%b"
                                commit-hash))
       (goto-char (point-min))
       (when (re-search-forward "\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([0-9]+\\)" nil t)
@@ -357,14 +358,12 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
               (author (match-string 2))
               (date (match-string 3))
               (summary (match-string 4))
-              (timestamp (string-to-number (match-string 5))))
-          (erase-buffer)
-          (if (zerop (call-process "git" nil t nil "show"
-                                   "--no-patch"
-                                   "--format=%b"
-                                   commit-hash))
-              (list short-hash author date summary timestamp (string-trim (buffer-string)))
-            (list short-hash author date summary timestamp "")))))))
+              (timestamp (string-to-number (match-string 5)))
+              (description ""))
+          ;; Parse description after --BODY-- marker
+          (when (re-search-forward "^--BODY--\n" nil t)
+            (setq description (string-trim (buffer-substring (point) (point-max)))))
+          (list short-hash author date summary timestamp description))))))
 
 (defun blame-reveal--ensure-commit-info (commit-hash)
   "Ensure commit info is loaded for COMMIT-HASH."
