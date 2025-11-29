@@ -94,7 +94,9 @@
 This is an implementation detail and should not be customized by users.")
 
 (defvar blame-reveal--margin-width 32
-  "Left margin width for IDEA style commit message. Default is 32 char width.")
+  "Left margin width for IDEA style commit message. Default is 32 char width.
+还需要根据blame-reveal--ensure-fringe-face中的height的比例计算实际的left margin宽度.
+如height是0.75，那么实际宽度是32*0.75")
 
 
 ;;;; Buffer-Local State Variables
@@ -2913,7 +2915,8 @@ This function always uses built-in git."
             ;; Load blame data (sync or async based on config)
             (blame-reveal--load-blame-data)
 
-            (setq left-margin-width blame-reveal--margin-width)
+            ;; 因为在blame-reveal--ensure-fringe-face margin的字体height是0.75，所以left-margin-width只需要原来的0.75即可
+            (setq left-margin-width (ceiling (* 0.75 blame-reveal--margin-width)))
             (message "blame-reveal-mode left-margin-width: %d" left-margin-width)
             (set-window-buffer (selected-window) (current-buffer))
 
