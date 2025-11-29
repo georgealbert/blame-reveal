@@ -93,6 +93,9 @@
   "Internal delay before rendering overlays after scrolling stops.
 This is an implementation detail and should not be customized by users.")
 
+(defvar blame-reveal--margin-width 32
+  "Left margin width for IDEA style commit message. Default is 32 char width.")
+
 
 ;;;; Buffer-Local State Variables
 
@@ -122,9 +125,6 @@ This is an implementation detail and should not be customized by users.")
 
 (defvar-local blame-reveal--current-block-commit nil
   "Commit hash of the currently highlighted block.")
-
-(defvar-local blame-reveal--margin-width 32
-  "Left margin width for IDEA style commit message. Default is 32 char width.")
 
 
 ;;;; Data Cache Variables
