@@ -308,7 +308,9 @@ Left margin width varies proportionally based on this value."
 (defcustom blame-reveal--margin-width 32
   "Left margin width for IDEA style commit message. Default is 32 char width.
 还需要根据blame-reveal--ensure-fringe-face中的height的比例计算实际的left margin宽度.
-如height是0.75，那么实际宽度是32*0.75")
+如height是0.75，那么实际宽度是32*0.75"
+  :type 'number
+  :group 'blame-reveal)
 
 
 ;;;; Commit Selection Customization
