@@ -1509,7 +1509,7 @@ The days limit comes from `blame-reveal-recent-days-limit':
   "Update commit message on left margin."
   (let* ((commit-info (gethash commit-hash blame-reveal--commit-info))
          (author  (nth 1 commit-info))
-         (date (blame-reveal--format-time-string (nth 4 commit-info) "CST"))
+         (date (blame-reveal--format-time-string (nth 4 commit-info) nil))
          (commit-msg (concat date " " (substring commit-hash 0 6) " " author)))
     (overlay-put
      ov 'before-string
