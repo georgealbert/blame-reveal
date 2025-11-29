@@ -913,7 +913,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
               (timestamp (string-to-number (match-string 5))))
           ;; Get description separately
           (erase-buffer)
-          (if (zerop (call-process "git" nil t nil "show"
+          ;; (if (zerop (call-process "git" nil t nil "show"
+          (if (zerop (call-process "git" nil t nil "log"
                                    "--no-patch"
                                    "--format=%b"
                                    commit-hash))
