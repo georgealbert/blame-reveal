@@ -2162,11 +2162,12 @@ Reuses existing overlays when possible to avoid flicker."
                         (progn
                           (let ((fringe-face (blame-reveal--ensure-fringe-face color)))
                             (overlay-put existing-ov 'blame-reveal-commit commit-hash)
-                            (overlay-put existing-ov 'before-string
-                                         (propertize "!" 'display
-                                                     (list blame-reveal-style
-                                                           'blame-reveal-full
-                                                           fringe-face))))
+                            (blame-reveal--update-margin-overlay existing-ov commit-hash fringe-face))
+                            ;; (overlay-put existing-ov 'before-string
+                            ;;              (propertize "!" 'display
+                            ;;                          (list blame-reveal-style
+                            ;;                                'blame-reveal-full
+                            ;;                                fringe-face))))
                           (puthash existing-ov t used-overlays)
                           (push existing-ov new-overlays))
 
