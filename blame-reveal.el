@@ -89,14 +89,9 @@
 (defvar blame-reveal--scroll-timer nil
   "Timer to debounce scroll updates.")
 
-(defvar blame-reveal--scroll-render-delay 0.3
+(defvar blame-reveal--scroll-render-delay 0.1
   "Internal delay before rendering overlays after scrolling stops.
 This is an implementation detail and should not be customized by users.")
-
-(defvar blame-reveal--margin-width 32
-  "Left margin width for IDEA style commit message. Default is 32 char width.
-还需要根据blame-reveal--ensure-fringe-face中的height的比例计算实际的left margin宽度.
-如height是0.75，那么实际宽度是32*0.75")
 
 
 ;;;; Buffer-Local State Variables
@@ -302,6 +297,18 @@ view commit details using `blame-reveal-show-commit-details' (s key)."
 1.0 means default size, 0.9 means 90% of default, 1.1 means 110%."
   :type 'number
   :group 'blame-reveal)
+
+(defcustom blame-reveal-margin-height 0.75
+  "Font height for commit message in left margin.
+1.0 means default size, 0.75 means 75% of default, 1.1 means 110%.
+Left margin width varies proportionally based on this value."
+  :type 'number
+  :group 'blame-reveal)
+
+(defcustom blame-reveal--margin-width 32
+  "Left margin width for IDEA style commit message. Default is 32 char width.
+还需要根据blame-reveal--ensure-fringe-face中的height的比例计算实际的left margin宽度.
+如height是0.75，那么实际宽度是32*0.75")
 
 
 ;;;; Commit Selection Customization
@@ -1860,7 +1867,7 @@ Returns (START-LINE . END-LINE)."
     (unless (facep face-name)
       (custom-declare-face face-name
                            ;; `((t :background ,color :foreground ,color :inherit font-lock-comment-face :height 0.75))
-                           `((t :background ,color :inherit font-lock-comment-face :height 0.75))
+                           `((t :background ,color :inherit font-lock-comment-face :height ,blame-reveal-margin-height))
                            (format "Face for git blame color %s" color)
                            :group 'blame-reveal))
     face-name))
@@ -2925,7 +2932,7 @@ This function always uses built-in git."
             (blame-reveal--load-blame-data)
 
             ;; 因为在blame-reveal--ensure-fringe-face margin的字体height是0.75，所以left-margin-width只需要原来的0.75即可
-            (setq left-margin-width (ceiling (* 0.75 blame-reveal--margin-width)))
+            (setq left-margin-width (ceiling (* blame-reveal-margin-height blame-reveal--margin-width)))
             (message "blame-reveal-mode left-margin-width: %d" left-margin-width)
             (set-window-buffer (selected-window) (current-buffer))
 
