@@ -889,8 +889,9 @@ Use lazy loading for large files, full loading for small files."
   "Get commit info for COMMIT-HASH.
 Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
   (with-temp-buffer
-    (when (zerop (call-process "git" nil t nil "show"
-                               "--no-patch"
+    ;; Use git log --no-walk instead of git show  --no-patch
+    (when (zerop (call-process "git" nil t nil "log"
+                               "--no-walk"
                                "--format=%h|%an|%ad|%s|%at"
                                "--date=short"
                                commit-hash))
