@@ -35,6 +35,7 @@
 ;;; Code:
 
 (require 'vc-git)
+(require 'cl-lib)
 
 
 ;;;; Fringe Bitmap Definition
@@ -159,6 +160,9 @@ This is an implementation detail and should not be customized by users.")
 
 (defvar-local blame-reveal--loading-animation-sub-step 0
   "Sub-step for smooth interpolation (0.0 to 1.0).")
+
+(defvar-local blame-reveal--color-strategy nil
+  "Current color strategy instance.")
 
 
 ;;;; Data Cache Variables
@@ -1291,7 +1295,7 @@ Note: Must be called with the source buffer as current-buffer."
 
 (defun blame-reveal--get-loading-gradient-color (intensity)
   "Get loading animation color with INTENSITY (0.0 to 1.0)."
-  (let* ((is-dark (blame-reveal--is-dark-theme-p))
+  (let* ((is-dark (blame-reveal-color--is-dark-theme-p))
          (base-color (if is-dark "#6c9ef8" "#4a7dc0"))
          (rgb (color-name-to-rgb base-color))
          (r (nth 0 rgb))
@@ -1930,161 +1934,157 @@ Uses sync or async based on configuration."
       (message "Blame data expanded to %d lines" (length blame-reveal--blame-data)))))
 
 
-;;;; Color Calculation Functions
+;;;; Color Strategy System
 
-(defun blame-reveal--is-dark-theme-p ()
-  "Check if current theme is dark based on default background."
+(cl-defstruct (blame-reveal-color-strategy
+               (:constructor nil))
+  name description)
+
+(cl-defgeneric blame-reveal-color-calculate (strategy commit-hash context))
+(cl-defgeneric blame-reveal-color-quality (strategy num-commits context))
+(cl-defgeneric blame-reveal-color-old (strategy context))
+(cl-defgeneric blame-reveal-color-uncommitted (strategy context))
+
+;; Utility functions
+(defun blame-reveal-color--is-dark-theme-p ()
   (let* ((bg (or (face-background 'default) "white"))
          (rgb (color-name-to-rgb bg)))
     (when rgb
-      ;; Calculate relative luminance
-      (let ((luminance (+ (* 0.299 (nth 0 rgb))
-                          (* 0.587 (nth 1 rgb))
-                          (* 0.114 (nth 2 rgb)))))
-        (< luminance 0.5)))))
+      (< (+ (* 0.299 (nth 0 rgb)) (* 0.587 (nth 1 rgb)) (* 0.114 (nth 2 rgb))) 0.5))))
 
-(defun blame-reveal--ease-out-cubic (x)
-  "Ease-out cubic function for more dramatic color transitions.
-Makes newer commits stand out more.
-X should be between 0.0 and 1.0."
+(defun blame-reveal-color--ease-out-cubic (x)
   (let ((x1 (- 1.0 x)))
     (- 1.0 (* x1 x1 x1))))
 
-(defun blame-reveal--hsl-to-hex (h s l)
-  "Convert HSL to hex color.
-H: 0-360, S: 0.0-1.0, L: 0.0-1.0"
+(defun blame-reveal-color--hsl-to-hex (h s l)
   (let* ((c (* (- 1 (abs (- (* 2 l) 1))) s))
          (x (* c (- 1 (abs (- (mod (/ h 60.0) 2) 1)))))
          (m (- l (/ c 2.0)))
-         (rgb (cond
-               ((< h 60)  (list c x 0))
-               ((< h 120) (list x c 0))
-               ((< h 180) (list 0 c x))
-               ((< h 240) (list 0 x c))
-               ((< h 300) (list x 0 c))
-               (t         (list c 0 x))))
+         (rgb (cond ((< h 60) (list c x 0)) ((< h 120) (list x c 0))
+                    ((< h 180) (list 0 c x)) ((< h 240) (list 0 x c))
+                    ((< h 300) (list x 0 c)) (t (list c 0 x))))
          (r (round (* 255 (+ (nth 0 rgb) m))))
          (g (round (* 255 (+ (nth 1 rgb) m))))
          (b (round (* 255 (+ (nth 2 rgb) m)))))
     (format "#%02x%02x%02x" r g b)))
 
-(defun blame-reveal--relative-color-by-rank (commit-hash is-dark)
-  "Calculate color based on commit's rank in recent commits list.
-Newest commit = most prominent, oldest in list = less prominent.
-Returns nil if commit is not in recent list."
-  (when-let ((rank (cl-position commit-hash blame-reveal--recent-commits
-                                :test 'equal)))
-    (let* ((total-recent (length blame-reveal--recent-commits))
-           ;; rank: 0 = newest, (total-recent - 1) = oldest in list
-           (age-ratio (if (= total-recent 1)
-                          0.0
-                        (/ (float rank) (- total-recent 1))))
-           ;; Apply ease-out curve
-           (eased-ratio (blame-reveal--ease-out-cubic age-ratio))
-           ;; Get values from color scheme
-           (hue (plist-get blame-reveal-color-scheme :hue))
-           (sat-min (plist-get blame-reveal-color-scheme :saturation-min))
-           (sat-max (plist-get blame-reveal-color-scheme :saturation-max))
-           (saturation (+ sat-min (* (- sat-max sat-min) (- 1.0 eased-ratio))))
-           ;; Lightness based on theme
-           (lightness (if is-dark
-                          ;; Dark: newer = brighter
-                          (let ((newest (plist-get blame-reveal-color-scheme :dark-newest))
-                                (oldest (plist-get blame-reveal-color-scheme :dark-oldest)))
-                            (+ oldest (* (- newest oldest) (- 1.0 eased-ratio))))
-                        ;; Light: newer = darker
-                        (let ((newest (plist-get blame-reveal-color-scheme :light-newest))
-                              (oldest (plist-get blame-reveal-color-scheme :light-oldest)))
-                          (- oldest (* (- oldest newest) (- 1.0 eased-ratio)))))))
-      (blame-reveal--hsl-to-hex hue saturation lightness))))
+;; Gradient strategy
+(cl-defstruct (blame-reveal-gradient-strategy
+               (:include blame-reveal-color-strategy)
+               (:constructor blame-reveal-gradient-strategy-create))
+  (hue 210) (dark-newest 0.70) (dark-oldest 0.35)
+  (light-newest 0.45) (light-oldest 0.75)
+  (saturation-min 0.25) (saturation-max 0.60))
 
-(defun blame-reveal--get-fallback-color ()
-  "Get fallback color when color calculation fails.
-Returns a neutral color based on current theme."
-  (if (blame-reveal--is-dark-theme-p)
-      "#6699cc"  ; Blue for dark theme
-    "#7799bb"))
-
-(defun blame-reveal--get-old-commit-color ()
-  "Get color for old commits (not in recent list).
-The color is derived from the color scheme to be:
-- Dark theme: darker than all recent commits
-- Light theme: lighter than all recent commits"
-  (or blame-reveal-old-commit-color
-      (let* ((is-dark (blame-reveal--is-dark-theme-p))
-             (hue (plist-get blame-reveal-color-scheme :hue))
-             ;; Use minimum saturation for old commits
-             (saturation (plist-get blame-reveal-color-scheme :saturation-min))
-             ;; Lightness: make it darker/lighter than the oldest recent commit
+(cl-defmethod blame-reveal-color-calculate
+  ((strategy blame-reveal-gradient-strategy) _commit-hash context)
+  (let* ((rank (plist-get context :rank))
+         (total-recent (plist-get context :total-recent))
+         (is-dark (plist-get context :is-dark)))
+    (when (and rank total-recent)
+      (let* ((age-ratio (if (= total-recent 1) 0.0
+                          (/ (float rank) (- total-recent 1))))
+             (eased-ratio (blame-reveal-color--ease-out-cubic age-ratio))
+             (hue (blame-reveal-gradient-strategy-hue strategy))
+             (sat-min (blame-reveal-gradient-strategy-saturation-min strategy))
+             (sat-max (blame-reveal-gradient-strategy-saturation-max strategy))
+             (saturation (+ sat-min (* (- sat-max sat-min) (- 1.0 eased-ratio))))
              (lightness (if is-dark
-                            ;; Dark: make it darker than oldest recent
-                            (let ((oldest (plist-get blame-reveal-color-scheme :dark-oldest)))
-                              (* oldest 0.7))  ; 30% darker
-                          ;; Light: make it lighter than oldest recent
-                          (let ((oldest (plist-get blame-reveal-color-scheme :light-oldest)))
-                            (+ oldest (* (- 1.0 oldest) 0.5))))))  ; 50% towards white
-        (blame-reveal--hsl-to-hex hue saturation lightness))))
+                            (let ((newest (blame-reveal-gradient-strategy-dark-newest strategy))
+                                  (oldest (blame-reveal-gradient-strategy-dark-oldest strategy)))
+                              (+ oldest (* (- newest oldest) (- 1.0 eased-ratio))))
+                          (let ((newest (blame-reveal-gradient-strategy-light-newest strategy))
+                                (oldest (blame-reveal-gradient-strategy-light-oldest strategy)))
+                            (- oldest (* (- oldest newest) (- 1.0 eased-ratio)))))))
+        (blame-reveal-color--hsl-to-hex hue saturation lightness)))))
 
-(defsubst blame-reveal--is-uncommitted-p (commit-hash)
-  "Check if COMMIT-HASH represents uncommitted changes."
-  (string-match-p "^0+$" commit-hash))
+(cl-defmethod blame-reveal-color-quality
+  ((strategy blame-reveal-gradient-strategy) num-commits context)
+  (when (and (> num-commits 0) strategy)
+    (let* ((is-dark (plist-get context :is-dark))
+           (lightness-range
+            (if is-dark
+                (- (blame-reveal-gradient-strategy-dark-newest strategy)
+                   (blame-reveal-gradient-strategy-dark-oldest strategy))
+              (- (blame-reveal-gradient-strategy-light-oldest strategy)
+                 (blame-reveal-gradient-strategy-light-newest strategy))))
+           (saturation-range
+            (- (blame-reveal-gradient-strategy-saturation-max strategy)
+               (blame-reveal-gradient-strategy-saturation-min strategy)))
+           (lightness-step (/ lightness-range (float (max 1 (1- num-commits)))))
+           (saturation-step (/ saturation-range (float (max 1 (1- num-commits)))))
+           (combined-step (+ (* 0.7 lightness-step) (* 0.3 saturation-step))))
+      (cond ((>= combined-step 0.05) 1.0) ((>= combined-step 0.03) 0.8)
+            ((>= combined-step 0.02) 0.5) (t (* combined-step 20))))))
 
-(defun blame-reveal--get-uncommitted-color ()
-  "Get color for uncommitted changes.
-Uses orange tones with similar visual prominence to old commit colors."
-  (or blame-reveal-uncommitted-color
-      (if (blame-reveal--is-dark-theme-p)
-          "#d9a066"  ; Orange for dark theme (H:30, S:60%, L:63%)
-        "#e6b380"))) ; Lighter orange for light theme (H:30, S:60%, L:70%)
+(cl-defmethod blame-reveal-color-old
+  ((strategy blame-reveal-gradient-strategy) context)
+  (let* ((is-dark (plist-get context :is-dark))
+         (hue (blame-reveal-gradient-strategy-hue strategy))
+         (saturation (blame-reveal-gradient-strategy-saturation-min strategy))
+         (lightness (if is-dark
+                        (* (blame-reveal-gradient-strategy-dark-oldest strategy) 0.7)
+                      (let ((oldest (blame-reveal-gradient-strategy-light-oldest strategy)))
+                        (+ oldest (* (- 1.0 oldest) 0.5))))))
+    (blame-reveal-color--hsl-to-hex hue saturation lightness)))
 
-(defun blame-reveal--timestamp-to-color (timestamp commit-hash)
-  "Convert TIMESTAMP to color based on commit age.
+(cl-defmethod blame-reveal-color-uncommitted
+  ((_strategy blame-reveal-gradient-strategy) context)
+  (if (plist-get context :is-dark) "#d9a066" "#e6b380"))
 
-For commits not in recent list (either not in top N or too old):
-  Returns `blame-reveal-old-commit-color' or theme-based color.
+;; Initialize strategy from color scheme
+(defun blame-reveal--init-color-strategy ()
+  (setq blame-reveal--color-strategy
+        (blame-reveal-gradient-strategy-create
+         :hue (plist-get blame-reveal-color-scheme :hue)
+         :dark-newest (plist-get blame-reveal-color-scheme :dark-newest)
+         :dark-oldest (plist-get blame-reveal-color-scheme :dark-oldest)
+         :light-newest (plist-get blame-reveal-color-scheme :light-newest)
+         :light-oldest (plist-get blame-reveal-color-scheme :light-oldest)
+         :saturation-min (plist-get blame-reveal-color-scheme :saturation-min)
+         :saturation-max (plist-get blame-reveal-color-scheme :saturation-max))))
 
-For commits in recent list (in top N AND within time limit):
-  If `blame-reveal-recent-commit-color' is:
-    - Function: Calls it with timestamp
-    - Color string: Uses that fixed color
-    - nil: Uses gradient based on rank in recent list"
-  (if (not blame-reveal--timestamps)
-      (blame-reveal--get-fallback-color)
-    (let ((is-dark (blame-reveal--is-dark-theme-p)))
-
-      ;; Check if this is a recent commit (in top N AND within time limit)
-      (if (not (blame-reveal--is-recent-commit-p commit-hash))
-          ;; Old commit (not in recent list)
-          (blame-reveal--get-old-commit-color)
-
-        ;; Recent commit (in top N AND within time limit)
-        (cond
-         ;; Custom function
-         ((functionp blame-reveal-recent-commit-color)
-          (funcall blame-reveal-recent-commit-color timestamp))
-
-         ;; Fixed color
-         ((stringp blame-reveal-recent-commit-color)
-          blame-reveal-recent-commit-color)
-
-         ;; Auto gradient based on rank
-         (t
-          (or (blame-reveal--relative-color-by-rank commit-hash is-dark)
-              (blame-reveal--get-fallback-color))))))))
-
+;; Wrapper functions (replacing old ones)
 (defun blame-reveal--get-commit-color (commit-hash)
-  "Get color for COMMIT-HASH, calculating if necessary."
-  ;; Use special color for uncommitted changes
+  (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
   (if (blame-reveal--is-uncommitted-p commit-hash)
       (blame-reveal--get-uncommitted-color)
     (or (gethash commit-hash blame-reveal--color-map)
         (let* ((info (gethash commit-hash blame-reveal--commit-info))
                (timestamp (and info (nth 4 info)))
-               (color (if timestamp
-                          (blame-reveal--timestamp-to-color timestamp commit-hash)
-                        (blame-reveal--get-fallback-color))))
-          (puthash commit-hash color blame-reveal--color-map)
-          color))))
+               (rank (cl-position commit-hash blame-reveal--recent-commits :test 'equal))
+               (context (list :timestamp timestamp :rank rank
+                              :total-recent (length blame-reveal--recent-commits)
+                              :is-dark (blame-reveal-color--is-dark-theme-p)
+                              :min-timestamp (car blame-reveal--timestamps)
+                              :max-timestamp (cdr blame-reveal--timestamps)))
+               (color (if rank
+                          (blame-reveal-color-calculate blame-reveal--color-strategy commit-hash context)
+                        (blame-reveal--get-old-commit-color))))
+          (when color (puthash commit-hash color blame-reveal--color-map))
+          (or color (if (blame-reveal-color--is-dark-theme-p) "#6699cc" "#7799bb"))))))
+
+(defun blame-reveal--get-old-commit-color ()
+  (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
+  (or blame-reveal-old-commit-color
+      (blame-reveal-color-old blame-reveal--color-strategy
+                              (list :is-dark (blame-reveal-color--is-dark-theme-p)))))
+
+(defun blame-reveal--get-uncommitted-color ()
+  (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
+  (or blame-reveal-uncommitted-color
+      (blame-reveal-color-uncommitted blame-reveal--color-strategy
+                                      (list :is-dark (blame-reveal-color--is-dark-theme-p)))))
+
+(defun blame-reveal--calculate-gradient-quality (num-commits)
+  (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
+  (blame-reveal-color-quality blame-reveal--color-strategy num-commits
+                              (list :is-dark (blame-reveal-color--is-dark-theme-p))))
+
+
+(defsubst blame-reveal--is-uncommitted-p (commit-hash)
+  "Check if COMMIT-HASH represents uncommitted changes."
+  (string-match-p "^0+$" commit-hash))
 
 (defun blame-reveal--get-commit-display-info (commit-hash)
   "Get display info for COMMIT-HASH.
@@ -2104,51 +2104,6 @@ This is a convenience function for common display logic."
 
 
 ;;;; Gradient Quality Functions
-
-(defun blame-reveal--calculate-gradient-quality (num-commits)
-  "Calculate color gradient quality for NUM-COMMITS.
-
-Returns a quality score from 0.0 to 1.0 based on how distinguishable
-the colors will be with the current color scheme.
-
-Quality is determined by per-commit color difference:
-- Lightness step: brightness change per commit (weighted 70%)
-- Saturation step: color intensity change per commit (weighted 30%)
-
-Quality thresholds:
-- 1.0 (excellent): >= 5% combined step
-- 0.8 (good):      >= 3% combined step
-- 0.5 (acceptable):>= 2% combined step
-- <0.5 (poor):     < 2% combined step
-
-A higher score means colors are more easily distinguishable.
-Lower scores indicate commits may look too similar."
-  (when (and (> num-commits 0) blame-reveal-color-scheme)
-    (let* ((scheme blame-reveal-color-scheme)
-           (is-dark (blame-reveal--is-dark-theme-p))
-           ;; Calculate lightness range from color scheme
-           (lightness-range
-            (if is-dark
-                (- (plist-get scheme :dark-newest)
-                   (plist-get scheme :dark-oldest))
-              (- (plist-get scheme :light-oldest)
-                 (plist-get scheme :light-newest))))
-           ;; Calculate saturation range
-           (saturation-range
-            (- (plist-get scheme :saturation-max)
-               (plist-get scheme :saturation-min)))
-           ;; Per-commit color difference
-           (lightness-step (/ lightness-range (float (max 1 (1- num-commits)))))
-           (saturation-step (/ saturation-range (float (max 1 (1- num-commits)))))
-           ;; Combined step (lightness weighted 70%, saturation 30%)
-           (combined-step (+ (* 0.7 lightness-step) (* 0.3 saturation-step))))
-
-      ;; Convert to quality score
-      (cond
-       ((>= combined-step 0.05) 1.0)   ; Excellent (5%+ step)
-       ((>= combined-step 0.03) 0.8)   ; Good (3-5% step)
-       ((>= combined-step 0.02) 0.5)   ; Acceptable (2-3% step)
-       (t (* combined-step 20))))))     ; Poor (<2% step, score 0.0-0.4)
 
 (defun blame-reveal--get-quality-thresholds ()
   "Get gradient quality thresholds based on user setting.
@@ -2816,10 +2771,16 @@ If NO-FRINGE is non-nil, don't show fringe indicators."
 Only recent commits (top N by recency among loaded commits) are permanently visible."
   (blame-reveal--is-recent-commit-p commit-hash))
 
+;; (defun blame-reveal--recolor-and-render ()
+;;   "Recalculate colors and re-render (for theme changes)."
+;;   (when blame-reveal--blame-data
+;;     (setq blame-reveal--color-map (make-hash-table :test 'equal))
+;;     (blame-reveal--render-visible-region)))
 (defun blame-reveal--recolor-and-render ()
   "Recalculate colors and re-render (for theme changes)."
   (when blame-reveal--blame-data
     (setq blame-reveal--color-map (make-hash-table :test 'equal))
+    (blame-reveal--init-color-strategy)  ;; 添加这行
     (blame-reveal--render-visible-region)))
 
 
@@ -3218,7 +3179,7 @@ and debugging color gradient issues."
                (t "Poor")))
              (lightness-range
               (let ((scheme blame-reveal-color-scheme)
-                    (is-dark (blame-reveal--is-dark-theme-p)))
+                    (is-dark (blame-reveal-color--is-dark-theme-p)))
                 (if is-dark
                     (- (plist-get scheme :dark-newest)
                        (plist-get scheme :dark-oldest))
@@ -3446,6 +3407,7 @@ This function always uses built-in git."
 
             ;; Initialize unified overlay management
             (blame-reveal--init-overlay-registry)
+            (blame-reveal--init-color-strategy)
 
             ;; Initialize state
             (setq blame-reveal--auto-days-cache nil)
@@ -3484,12 +3446,12 @@ This function always uses built-in git."
 
     ;; Use unified cleanup
     (blame-reveal--clear-all-overlays)
-    
+
     ;; Clear legacy header overlay (will be migrated in next step)
     (when blame-reveal--header-overlay
       (delete-overlay blame-reveal--header-overlay)
       (setq blame-reveal--header-overlay nil))
-    
+
     (blame-reveal--clear-sticky-header)
 
     (remove-hook 'after-save-hook #'blame-reveal--full-update t)
