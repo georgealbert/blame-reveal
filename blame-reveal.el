@@ -312,7 +312,7 @@ Left margin width varies proportionally based on this value."
   :type 'number
   :group 'blame-reveal)
 
-(defcustom blame-reveal-margin-time-format "%Y/%m%d"
+(defcustom blame-reveal-margin-time-format "%Y/%m/%d"
   "Format for time strings in left margin."
   :type 'string
   :group 'blame-reveal)
