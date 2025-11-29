@@ -1,7 +1,7 @@
 ;;; blame-reveal-recursive.el --- Recursive blame extension -*- lexical-binding: t; -*-
 
 ;; Author: Lucius Chen
-;; Version: 0.4
+;; Version: 0.5
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: git, vc, convenience
 
@@ -28,15 +28,6 @@
 ;;; Code:
 
 (require 'blame-reveal)
-
-
-;;;; Async Loading State for Recursive Blame
-
-(defvar-local blame-reveal--recursive-load-process nil
-  "Background process for loading blame at specific revision.")
-
-(defvar-local blame-reveal--recursive-load-buffer nil
-  "Temporary buffer for recursive load output.")
 
 
 ;;;; Helper Functions
@@ -124,17 +115,22 @@ Returns nil if REVISION is not a parent reference."
 
     (cond
      (is-initial
+      (blame-reveal--state-error
+       (format "Reached initial commit %s" (substring base-commit 0 8)))
       (message "Reached initial commit %s - this is the repository's first commit"
                (substring base-commit 0 8)))
 
      ((and base-commit (not file-exists))
+      (blame-reveal--state-error
+       (format "File first added at %s" (substring base-commit 0 8)))
       (message "Reached the commit where this file was first added (%s)"
                (substring base-commit 0 8)))
 
      (t
+      (blame-reveal--state-error (format "No blame data at %s" revision))
       (message "No blame data at revision %s" revision)))
 
-    ;; Restore state
+    ;; Restore state from stack
     (when blame-reveal--blame-stack
       (let ((state (pop blame-reveal--blame-stack)))
         (blame-reveal--restore-state state)))))
@@ -152,52 +148,53 @@ Always loads complete file for proper recursive blame navigation."
     (unless git-root
       (user-error "File is not in a git repository"))
 
-    (message "Loading blame at %s..."
-             (if (eq revision 'uncommitted) "working tree" revision))
-
-    ;; 启动加载动画
-    (setq blame-reveal--loading t)
-    (blame-reveal--start-loading-animation)
-
-    ;; Cleanup existing process
-    (blame-reveal--cleanup-async-state 'blame-reveal--recursive-load-process
-                                       'blame-reveal--recursive-load-buffer)
+    ;; 使用状态机启动
+    (unless (blame-reveal--state-start 'recursive 'async
+                                       (list :revision revision))
+      (user-error "Cannot start recursive blame: state machine busy"))
 
     (let* ((default-directory git-root)
            (relative-file (file-relative-name file git-root))
-           (temp-buffer (generate-new-buffer " *blame-recursive-load*"))
+           (temp-buffer (generate-new-buffer " *blame-recursive*"))
            (process-environment (cons "GIT_PAGER=cat"
                                       (cons "PAGER=cat"
-                                            process-environment))))
+                                            process-environment)))
+           (args (blame-reveal--build-blame-command-args-for-revision
+                  revision nil nil relative-file)))
 
-      (setq blame-reveal--recursive-load-buffer temp-buffer)
+      (message "Git command: git %s" (mapconcat 'identity args " "))
 
-      ;; Build command args for this specific revision
-      (let ((args (blame-reveal--build-blame-command-args-for-revision
-                   revision nil nil relative-file)))
-
-        (message "Git command: git %s" (mapconcat 'identity args " "))
-
-        (setq blame-reveal--recursive-load-process
-              (make-process
-               :name "blame-recursive-load"
-               :buffer temp-buffer
-               :command (cons "git" args)
-               :sentinel (blame-reveal--make-async-sentinel
-                          source-buffer temp-buffer
-                          (lambda (temp-buf)
-                            (blame-reveal--handle-recursive-load-complete
-                             temp-buf revision file))
-                          'blame-reveal--recursive-load-process
-                          'blame-reveal--recursive-load-buffer
-                          (lambda ()
-                            (blame-reveal--handle-recursive-load-error revision file)))
-               :noquery t))))))
+      ;; 设置异步资源到状态机
+      (blame-reveal--state-set-async-resources
+       (make-process
+        :name "blame-recursive"
+        :buffer temp-buffer
+        :command (cons "git" args)
+        :sentinel (blame-reveal--make-async-sentinel
+                   source-buffer temp-buffer
+                   (lambda (temp-buf)
+                     (blame-reveal--handle-recursive-load-complete
+                      temp-buf revision file))
+                   (lambda ()
+                     (blame-reveal--handle-recursive-load-error revision file)))
+        :noquery t)
+       temp-buffer))))
 
 (defun blame-reveal--handle-recursive-load-complete (temp-buffer revision file)
   "Handle completion of recursive blame loading from TEMP-BUFFER."
+  ;; 检查状态机状态
+  (unless (and (eq blame-reveal--state-status 'loading)
+               (eq blame-reveal--state-operation 'recursive))
+    (message "[State] Unexpected recursive complete in state %s/%s"
+             blame-reveal--state-status blame-reveal--state-operation)
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (cl-return-from blame-reveal--handle-recursive-load-complete nil))
+
   (unwind-protect
       (when (buffer-live-p temp-buffer)
+        (blame-reveal--state-transition 'processing)
+
         (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
 
           (if blame-data
@@ -213,24 +210,24 @@ Always loads complete file for proper recursive blame navigation."
                 (blame-reveal--reset-data-structures blame-data)
 
                 ;; Load commit info and render
+                (blame-reveal--state-transition 'rendering)
                 (blame-reveal--load-commits-incrementally)
                 (blame-reveal--smooth-transition-render)
 
                 (message "Loaded blame at %s (%d lines)"
                          (or blame-reveal--revision-display revision)
-                         (length blame-data)))
+                         (length blame-data))
+
+                ;; 成功完成
+                (blame-reveal--state-complete))
 
             ;; No blame data
-            (message "Failed to parse blame data")
+            (blame-reveal--state-error "Failed to parse blame data")
             (blame-reveal--handle-recursive-load-error revision file))))
 
-    ;; Cleanup - 无论成功失败都要清理
+    ;; Cleanup - 清理临时 buffer（状态机会清理 process）
     (when (buffer-live-p temp-buffer)
-      (kill-buffer temp-buffer))
-    (setq blame-reveal--recursive-load-buffer nil)
-    (setq blame-reveal--recursive-load-process nil)
-    (setq blame-reveal--loading nil)
-    (blame-reveal--stop-loading-animation)))
+      (kill-buffer temp-buffer))))
 
 
 ;;;; Synchronous Recursive Blame
@@ -267,17 +264,18 @@ Always loads complete file for proper recursive blame navigation."
     (unless file
       (user-error "No file associated with buffer"))
 
-    (message "Loading blame at %s..."
-             (if (eq revision 'uncommitted) "working tree" revision))
-
-    ;; 启动加载动画
-    (setq blame-reveal--loading t)
-    (blame-reveal--start-loading-animation)
+    ;; 使用状态机启动
+    (unless (blame-reveal--state-start 'recursive 'sync
+                                       (list :revision revision))
+      (user-error "Cannot start recursive blame: state machine busy"))
 
     (condition-case err
         (let ((blame-data (blame-reveal--get-blame-data-at-revision revision file)))
+
           (if blame-data
               (progn
+                (blame-reveal--state-transition 'processing)
+
                 ;; Update current state
                 (setq blame-reveal--current-revision revision)
                 (setq blame-reveal--revision-display
@@ -289,12 +287,16 @@ Always loads complete file for proper recursive blame navigation."
                 (blame-reveal--reset-data-structures blame-data)
 
                 ;; Load commit info and render
+                (blame-reveal--state-transition 'rendering)
                 (blame-reveal--load-commits-incrementally)
                 (blame-reveal--smooth-transition-render)
 
                 (message "Loaded blame at %s (%d lines)"
                          (or blame-reveal--revision-display revision)
-                         (length blame-data)))
+                         (length blame-data))
+
+                ;; 成功完成
+                (blame-reveal--state-complete))
 
             ;; No blame data - determine why
             (let* ((base-commit (blame-reveal--get-base-commit-from-parent-ref revision))
@@ -305,23 +307,26 @@ Always loads complete file for proper recursive blame navigation."
 
               (cond
                (is-initial
+                (blame-reveal--state-error
+                 (format "Reached initial commit %s" (substring base-commit 0 8)))
                 (user-error "Reached initial commit %s - this is the repository's first commit"
                             (substring base-commit 0 8)))
 
                ((and base-commit (not file-exists))
+                (blame-reveal--state-error
+                 (format "File first added at %s" (substring base-commit 0 8)))
                 (user-error "Reached the commit where this file was first added (%s)"
                             (substring base-commit 0 8)))
 
                (t
+                (blame-reveal--state-error
+                 (format "No blame data at %s" revision))
                 (user-error "Failed to get blame data at revision %s" revision))))))
 
       (error
+       (blame-reveal--state-error (error-message-string err))
        (message "Error during recursive blame: %s" (error-message-string err))
-       (signal (car err) (cdr err))))
-
-    ;; 无论成功失败，最后都要清理（放在 condition-case 外面）
-    (setq blame-reveal--loading nil)
-    (blame-reveal--stop-loading-animation)))
+       (signal (car err) (cdr err))))))
 
 
 ;;;; Unified Interface
@@ -432,20 +437,14 @@ This minimizes visual disruption during recursive blame."
 ;;;###autoload
 (defun blame-reveal-blame-recursively ()
   "Recursively blame the commit before the one at current line.
-This 'time travels' to see who modified this line before the current commit.
-
-Example:
-  Current: Line 50 modified by Alice (commit abc123)
-  Press 'b': Jump to abc123^ to see who modified it before Alice
-  Press 'b' again: Continue going back in history
-
-This is useful for:
-  - Finding the original author of a line
-  - Understanding how code evolved over time
-  - Tracking down when a bug was introduced"
+This 'time travels' to see who modified this line before the current commit."
   (interactive)
   (unless blame-reveal-mode
     (user-error "blame-reveal-mode is not enabled"))
+
+  ;; 检查状态机是否忙碌
+  (when (blame-reveal--state-is-busy-p)
+    (user-error "Please wait for current operation to complete"))
 
   (let* ((current-block (blame-reveal--get-current-block))
          (commit-hash (car current-block)))
@@ -465,7 +464,7 @@ This is useful for:
       (condition-case err
           (blame-reveal--load-blame-at-revision parent-commit)
         (error
-         ;; Restore state on error
+         ;; Restore state on error (state machine already handled cleanup)
          (message "Error in recursive blame: %s" (error-message-string err))
          (let ((state (pop blame-reveal--blame-stack)))
            (when state
@@ -474,11 +473,14 @@ This is useful for:
 
 ;;;###autoload
 (defun blame-reveal-blame-back ()
-  "Go back to previous blame state in the recursion stack.
-Press '^' or 'p' to undo recursive blame and return to newer revision."
+  "Go back to previous blame state in the recursion stack."
   (interactive)
   (unless blame-reveal-mode
     (user-error "blame-reveal-mode is not enabled"))
+
+  ;; 可以随时返回，即使在加载中（取消当前加载）
+  (when (blame-reveal--state-is-busy-p)
+    (blame-reveal--state-cancel "user navigated back"))
 
   (if (null blame-reveal--blame-stack)
       (message "Already at the newest revision")
@@ -489,15 +491,14 @@ Press '^' or 'p' to undo recursive blame and return to newer revision."
 
 ;;;###autoload
 (defun blame-reveal-blame-at-revision (revision)
-  "Show blame at a specific REVISION (interactive).
-REVISION can be:
-  - Commit hash (e.g., abc123)
-  - Branch name (e.g., main, develop)
-  - Tag name (e.g., v1.0.0)
-  - Relative reference (e.g., HEAD~3, main~5)"
+  "Show blame at a specific REVISION (interactive)."
   (interactive "sBlame at revision (commit/branch/tag): ")
   (unless blame-reveal-mode
     (user-error "blame-reveal-mode is not enabled"))
+
+  ;; 检查状态机是否忙碌
+  (when (blame-reveal--state-is-busy-p)
+    (user-error "Please wait for current operation to complete"))
 
   (when (string-empty-p (string-trim revision))
     (user-error "Revision cannot be empty"))
@@ -532,6 +533,10 @@ REVISION can be:
   (unless blame-reveal-mode
     (user-error "blame-reveal-mode is not enabled"))
 
+  ;; 取消当前操作（如果有）
+  (when (blame-reveal--state-is-busy-p)
+    (blame-reveal--state-cancel "reset to HEAD"))
+
   (cond
    ;; Case 1: In recursive blame mode
    (blame-reveal--current-revision
@@ -539,7 +544,6 @@ REVISION can be:
     (setq blame-reveal--current-revision nil)
     (setq blame-reveal--revision-display nil)
     (setq blame-reveal--auto-days-cache nil)
-    (blame-reveal--cleanup-recursive-processes)
     (blame-reveal--full-update)
     (message "Reset to HEAD"))
 
@@ -551,20 +555,6 @@ REVISION can be:
    ;; Case 3: Already at HEAD, no stack
    (t
     (message "Already at HEAD"))))
-
-
-;;;; Cleanup
-
-(defun blame-reveal--cleanup-recursive-processes ()
-  "Cleanup recursive blame async processes and buffers."
-  (blame-reveal--cleanup-async-state 'blame-reveal--recursive-load-process
-                                      'blame-reveal--recursive-load-buffer))
-
-;; Add cleanup to mode disable
-(add-hook 'blame-reveal-mode-hook
-          (lambda ()
-            (unless blame-reveal-mode
-              (blame-reveal--cleanup-recursive-processes))))
 
 
 ;;;; Utility Functions

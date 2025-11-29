@@ -198,8 +198,8 @@ Cache is invalidated when commit count changes significantly.")
 (defvar-local blame-reveal--last-window-start nil
   "Last window start position to detect scrolling.")
 
-(defvar-local blame-reveal--loading nil
-  "Flag to indicate if blame data is being loaded.")
+;; (defvar-local blame-reveal--loading nil
+;;   "Flag to indicate if blame data is being loaded.")
 
 (defvar-local blame-reveal--all-commits-loaded nil
   "Flag indicating if all commits info has been loaded.")
@@ -221,24 +221,24 @@ Each element is a plist with :revision, :line, :blame-data, :commit-info, etc.")
 
 ;;;; Async Loading State Variables
 
-(defvar-local blame-reveal--expansion-process nil
-  "Background process for expanding blame data.")
+;; (defvar-local blame-reveal--expansion-process nil
+;;   "Background process for expanding blame data.")
 
-(defvar-local blame-reveal--pending-expansion nil
-  "Pending expansion range: (START-LINE . END-LINE).")
+;; (defvar-local blame-reveal--pending-expansion nil
+;;   "Pending expansion range: (START-LINE . END-LINE).")
 
-(defvar-local blame-reveal--expansion-buffer nil
-  "Temporary buffer for expansion output.")
+;; (defvar-local blame-reveal--expansion-buffer nil
+;;   "Temporary buffer for expansion output.")
 
-(defvar-local blame-reveal--is-expanding nil
-  "Flag indicating if blame data is being expanded.
-When t, suppress scroll-triggered rendering to avoid flicker.")
+;; (defvar-local blame-reveal--is-expanding nil
+;;   "Flag indicating if blame data is being expanded.
+;; When t, suppress scroll-triggered rendering to avoid flicker.")
 
-(defvar-local blame-reveal--initial-load-process nil
-  "Background process for initial blame data loading.")
+;; (defvar-local blame-reveal--initial-load-process nil
+;;   "Background process for initial blame data loading.")
 
-(defvar-local blame-reveal--initial-load-buffer nil
-  "Temporary buffer for initial load output.")
+;; (defvar-local blame-reveal--initial-load-buffer nil
+;;   "Temporary buffer for initial load output.")
 
 
 ;;;; Customization Group
@@ -613,6 +613,160 @@ For small files, sync loading is actually faster due to less overhead."
                  (const :tag "Always use magit" t)
                  (const :tag "Always use built-in" nil))
   :group 'blame-reveal)
+
+;;;; Loading State Machine
+
+;; State values
+(defconst blame-reveal--state-idle 'idle)
+(defconst blame-reveal--state-loading 'loading)
+(defconst blame-reveal--state-processing 'processing)
+(defconst blame-reveal--state-rendering 'rendering)
+(defconst blame-reveal--state-error 'error)
+
+;; Operation types
+(defconst blame-reveal--op-initial 'initial)
+(defconst blame-reveal--op-expansion 'expansion)
+(defconst blame-reveal--op-recursive 'recursive)
+
+(defvar-local blame-reveal--state-status 'idle
+  "Current loading state: idle/loading/processing/rendering/error.")
+
+(defvar-local blame-reveal--state-operation nil
+  "Current operation: initial/expansion/recursive/nil.")
+
+(defvar-local blame-reveal--state-mode nil
+  "Current operation mode: sync/async/nil.")
+
+(defvar-local blame-reveal--state-metadata nil
+  "Operation metadata plist: (:start-line N :end-line N :revision REV).")
+
+(defvar-local blame-reveal--state-process nil
+  "Current async process.")
+
+(defvar-local blame-reveal--state-buffer nil
+  "Current async buffer.")
+
+;;;; State Machine Core Functions
+
+(defun blame-reveal--state-can-start-p (operation)
+  "Check if OPERATION can start in current state.
+Returns (CAN-START-P . REASON)."
+  (let ((status blame-reveal--state-status)
+        (current-op blame-reveal--state-operation))
+    (cond
+     ;; Idle: can always start
+     ((eq status 'idle)
+      '(t . "idle"))
+     
+     ;; Loading same operation: cannot start
+     ((and (eq status 'loading)
+           (eq current-op operation))
+      `(nil . ,(format "already loading %s" operation)))
+     
+     ;; Expansion can upgrade initial load
+     ((and (eq status 'loading)
+           (eq current-op 'initial)
+           (eq operation 'expansion))
+      '(t . "upgrade initial->expansion"))
+     
+     ;; Recursive cancels everything
+     ((eq operation 'recursive)
+      '(t . "recursive cancels current"))
+     
+     ;; Otherwise busy
+     (t
+      `(nil . ,(format "busy: %s %s" status current-op))))))
+
+(defun blame-reveal--state-start (operation mode &optional metadata)
+  "Start OPERATION in MODE with optional METADATA.
+Returns t if started successfully."
+  (pcase-let ((`(,can-start . ,reason)
+               (blame-reveal--state-can-start-p operation)))
+    (if can-start
+        (progn
+          ;; Cancel previous if needed
+          (when (not (eq blame-reveal--state-status 'idle))
+            (blame-reveal--state-cancel reason))
+          
+          ;; Set new state
+          (setq blame-reveal--state-status 'loading
+                blame-reveal--state-operation operation
+                blame-reveal--state-mode mode
+                blame-reveal--state-metadata metadata
+                blame-reveal--state-process nil
+                blame-reveal--state-buffer nil)
+          
+          ;; Start animation
+          (blame-reveal--start-loading-animation)
+          
+          (message "[State] Start: %s (%s) - %s" operation mode reason)
+          t)
+      
+      (message "[State] Cannot start %s: %s" operation reason)
+      nil)))
+
+(defun blame-reveal--state-set-async-resources (process buffer)
+  "Set async PROCESS and BUFFER for current operation."
+  (setq blame-reveal--state-process process
+        blame-reveal--state-buffer buffer))
+
+(defun blame-reveal--state-transition (new-status)
+  "Transition to NEW-STATUS."
+  (let ((old-status blame-reveal--state-status))
+    (setq blame-reveal--state-status new-status)
+    (message "[State] Transition: %s -> %s (op:%s)"
+             old-status new-status blame-reveal--state-operation)))
+
+(defun blame-reveal--state-cleanup-async ()
+  "Cleanup async resources (process and buffer)."
+  (when blame-reveal--state-process
+    (when (process-live-p blame-reveal--state-process)
+      (delete-process blame-reveal--state-process))
+    (setq blame-reveal--state-process nil))
+  
+  (when blame-reveal--state-buffer
+    (when (buffer-live-p blame-reveal--state-buffer)
+      (kill-buffer blame-reveal--state-buffer))
+    (setq blame-reveal--state-buffer nil)))
+
+(defun blame-reveal--state-complete ()
+  "Complete current operation successfully."
+  (blame-reveal--stop-loading-animation)
+  (blame-reveal--state-cleanup-async)
+  (setq blame-reveal--state-status 'idle
+        blame-reveal--state-operation nil
+        blame-reveal--state-mode nil
+        blame-reveal--state-metadata nil)
+  (message "[State] Complete"))
+
+(defun blame-reveal--state-error (error-msg)
+  "Handle error with ERROR-MSG."
+  (message "[State] Error: %s" error-msg)
+  (blame-reveal--stop-loading-animation)
+  (blame-reveal--state-cleanup-async)
+  (setq blame-reveal--state-status 'error)
+  ;; Auto-recover to idle after showing error
+  (run-with-timer 0.1 nil
+                  (lambda ()
+                    (when (eq blame-reveal--state-status 'error)
+                      (setq blame-reveal--state-status 'idle
+                            blame-reveal--state-operation nil
+                            blame-reveal--state-mode nil
+                            blame-reveal--state-metadata nil)))))
+
+(defun blame-reveal--state-cancel (reason)
+  "Cancel current operation for REASON."
+  (message "[State] Cancel: %s" reason)
+  (blame-reveal--stop-loading-animation)
+  (blame-reveal--state-cleanup-async)
+  (setq blame-reveal--state-status 'idle
+        blame-reveal--state-operation nil
+        blame-reveal--state-mode nil
+        blame-reveal--state-metadata nil))
+
+(defun blame-reveal--state-is-busy-p ()
+  "Check if state machine is busy."
+  (not (eq blame-reveal--state-status 'idle)))
 
 ;;;; Unified Overlay Management System
 
@@ -1154,103 +1308,68 @@ RELATIVE-FILE is the file path relative to git root."
     ;; Add file at the end
     (append args (list relative-file))))
 
-(defun blame-reveal--cleanup-async-state (process-var buffer-var)
-  "Cleanup async process and buffer.
-PROCESS-VAR is the symbol holding the process.
-BUFFER-VAR is the symbol holding the buffer."
-  (when-let ((proc (symbol-value process-var)))
-    (when (process-live-p proc)
-      (delete-process proc))
-    (set process-var nil))
-  (when-let ((buf (symbol-value buffer-var)))
-    (when (buffer-live-p buf)
-      (kill-buffer buf))
-    (set buffer-var nil)))
+;; (defun blame-reveal--cleanup-async-state (process-var buffer-var)
+;;   "Cleanup async process and buffer.
+;; PROCESS-VAR is the symbol holding the process.
+;; BUFFER-VAR is the symbol holding the buffer."
+;;   (when-let ((proc (symbol-value process-var)))
+;;     (when (process-live-p proc)
+;;       (delete-process proc))
+;;     (set process-var nil))
+;;   (when-let ((buf (symbol-value buffer-var)))
+;;     (when (buffer-live-p buf)
+;;       (kill-buffer buf))
+;;     (set buffer-var nil)))
 
 (defun blame-reveal--make-async-sentinel (source-buffer temp-buffer success-handler
-                                                        process-var buffer-var
                                                         &optional error-handler)
   "Create a process sentinel for async blame loading.
-SOURCE-BUFFER is the buffer where blame is displayed.
-TEMP-BUFFER is the temporary buffer receiving git output.
-SUCCESS-HANDLER is called on success with TEMP-BUFFER.
-PROCESS-VAR and BUFFER-VAR are symbols to cleanup on failure.
-ERROR-HANDLER is optional function called on error in source buffer."
+Simplified version using state machine."
   `(lambda (proc event)
      (cond
       ((string-match-p "finished" event)
        (when (buffer-live-p ,source-buffer)
-         (with-current-buffer ,source-buffer
-           (funcall ,success-handler ,temp-buffer))))
-
-      ;; 任何非正常结束都当作错误处理
+         (with-current-buffer ,source-buffer)
+           (funcall ,success-handler ,temp-buffer)))
+      
       (t
-       (message "Async blame process ended: %s" event)
-       (when (and (buffer-live-p ,temp-buffer)
-                  (> (buffer-size ,temp-buffer) 0))
-         (with-current-buffer ,temp-buffer
-           (message "Git output: %s" (buffer-substring-no-properties
-                                      (point-min)
-                                      (min (point-max) 500)))))
-       (when (buffer-live-p ,temp-buffer)
-         (kill-buffer ,temp-buffer))
        (when (buffer-live-p ,source-buffer)
          (with-current-buffer ,source-buffer
-           (set ',process-var nil)
-           (set ',buffer-var nil)
-           (setq blame-reveal--loading nil)
-           (blame-reveal--stop-loading-animation)
-           ;; Call optional error handler
+           (blame-reveal--state-error (format "Process %s: %s" proc event))
            ,(when error-handler
-              `(funcall ,error-handler))))))))
+              `(funcall ,error-handler))))
+       (when (buffer-live-p ,temp-buffer)
+         (kill-buffer ,temp-buffer))))))
 
-(defun blame-reveal--start-async-blame (process-var buffer-var buffer-name
-                                                    process-name start-line end-line
-                                                    success-handler
-                                                    &optional error-handler)
-  "Start async git blame process.
-PROCESS-VAR: Symbol for storing the process.
-BUFFER-VAR: Symbol for storing the temp buffer.
-BUFFER-NAME: Name for the temp buffer.
-PROCESS-NAME: Name for the process.
-START-LINE, END-LINE: Optional line range.
-SUCCESS-HANDLER: Function called on success with temp buffer.
-ERROR-HANDLER: Optional function called on error in source buffer.
-
-Note: Must be called with the source buffer as current-buffer."
+(defun blame-reveal--start-async-blame (start-line end-line success-handler
+                                                   &optional error-handler)
+  "Start async git blame process - simplified with state machine."
   (let* ((file (buffer-file-name))
          (git-root (and file (vc-git-root file)))
          (source-buffer (current-buffer)))
-
+    
     (unless git-root
-      (setq blame-reveal--loading nil)
-      (message "File is not in a git repository")
+      (blame-reveal--state-error "File is not in a git repository")
       (error "File is not in a git repository"))
-
-    ;; Cancel existing process
-    (blame-reveal--cleanup-async-state process-var buffer-var)
-
+    
     (let* ((default-directory git-root)
            (relative-file (file-relative-name file git-root))
-           (temp-buffer (generate-new-buffer buffer-name))
+           (temp-buffer (generate-new-buffer " *blame-async*"))
            (process-environment (cons "GIT_PAGER=cat"
                                       (cons "PAGER=cat"
-                                            process-environment))))
-
-      (set buffer-var temp-buffer)
-
-      (let ((args (blame-reveal--build-blame-command-args
-                   start-line end-line relative-file)))
-
-        (set process-var
-             (make-process
-              :name process-name
-              :buffer temp-buffer
-              :command (cons "git" args)
-              :sentinel (blame-reveal--make-async-sentinel
-                         source-buffer temp-buffer success-handler
-                         process-var buffer-var error-handler)
-              :noquery t))))))
+                                            process-environment)))
+           (args (blame-reveal--build-blame-command-args
+                  start-line end-line relative-file)))
+      
+      (blame-reveal--state-set-async-resources
+       (make-process
+        :name "blame-async"
+        :buffer temp-buffer
+        :command (cons "git" args)
+        :sentinel (blame-reveal--make-async-sentinel
+                   source-buffer temp-buffer success-handler error-handler)
+        :noquery t)
+       temp-buffer))))
 
 (defun blame-reveal--get-header-faces (color)
   "Get face definitions for header, metadata, and description with COLOR."
@@ -1395,10 +1514,10 @@ Note: Must be called with the source buffer as current-buffer."
   (dolist (buffer (buffer-list))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        ;; 只更新正在加载且可见的 buffer
+        ;; 改用状态机检查：只更新正在加载且可见的 buffer
         (when (and blame-reveal-mode
-                   blame-reveal--loading
-                   (get-buffer-window buffer))  ; 关键：只处理可见的 buffer
+                   (eq blame-reveal--state-status 'loading)  ;; 改这里
+                   (get-buffer-window buffer))
           ;; 清理旧的 overlays
           (dolist (ov blame-reveal--loading-animation-overlays)
             (when (overlay-buffer ov)
@@ -1454,7 +1573,8 @@ Note: Must be called with the source buffer as current-buffer."
   ;; 如果是，停止全局定时器
   (unless (cl-some (lambda (buf)
                      (with-current-buffer buf
-                       (and blame-reveal-mode blame-reveal--loading)))
+                       (and blame-reveal-mode 
+                            (eq blame-reveal--state-status 'loading))))
                    (buffer-list))
     (when blame-reveal--global-loading-animation-timer
       (cancel-timer blame-reveal--global-loading-animation-timer)
@@ -1527,24 +1647,24 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
             nil))))))
 
 (defun blame-reveal--load-blame-data-sync ()
-  "Load git blame data synchronously.
-Use lazy loading for large files, full loading for small files."
-  (blame-reveal--start-loading-animation)
+  "Load git blame data synchronously."
+  (unless (blame-reveal--state-start 'initial 'sync)
+    (cl-return-from blame-reveal--load-blame-data-sync nil))
+  
   (condition-case err
       (let* ((file (buffer-file-name))
              (git-root (and file (vc-git-root file))))
-
+        
         (unless git-root
-          (setq blame-reveal--loading nil)
-          (blame-reveal--stop-loading-animation)
-          (message "File is not in a git repository")
+          (blame-reveal--state-error "Not in git repository")
           (cl-return-from blame-reveal--load-blame-data-sync nil))
-
+        
         (let ((use-lazy (blame-reveal--should-lazy-load-p))
               (blame-data nil))
-
+          
+          (blame-reveal--state-transition 'loading)
+          
           (if use-lazy
-              ;; Large file: only load visible region
               (let* ((range (blame-reveal--get-visible-line-range))
                      (start-line (car range))
                      (end-line (cdr range)))
@@ -1553,104 +1673,97 @@ Use lazy loading for large files, full loading for small files."
                   (setq blame-reveal--blame-data-range (cons start-line end-line))
                   (message "Git blame loaded (sync, lazy): %d lines (range %d-%d)"
                            (length blame-data) start-line end-line)))
-
-            ;; Small file: load entire file
+            
             (setq blame-data (blame-reveal--get-blame-data))
             (when blame-data
-              (setq blame-reveal--blame-data-range nil)  ; nil = full load
+              (setq blame-reveal--blame-data-range nil)
               (message "Git blame loaded (sync, full): %d lines" (length blame-data))))
-
+          
           (if blame-data
               (progn
+                (blame-reveal--state-transition 'processing)
+                
                 (setq blame-reveal--blame-data blame-data)
                 (setq blame-reveal--commit-info (make-hash-table :test 'equal))
                 (setq blame-reveal--color-map (make-hash-table :test 'equal))
                 (setq blame-reveal--timestamps nil)
                 (setq blame-reveal--recent-commits nil)
                 (setq blame-reveal--all-commits-loaded nil)
-
-                ;; Load commits incrementally
+                
+                (blame-reveal--state-transition 'rendering)
                 (blame-reveal--load-commits-incrementally)
-
-                ;; Initial render
-                (blame-reveal--render-visible-region))
-
-            (message "No git blame data available"))))
-
+                (blame-reveal--render-visible-region)
+                
+                (blame-reveal--state-complete))
+            
+            (blame-reveal--state-error "No git blame data available"))))
+    
     (error
-     ;; 错误时也要清理
-     (message "Error loading git blame: %s" (error-message-string err))
-     nil))
+     (blame-reveal--state-error (error-message-string err))
+     nil)))
 
-  ;; 无论成功还是失败，最后都要清理（放在 condition-case 外面）
-  (setq blame-reveal--loading nil)
-  (blame-reveal--stop-loading-animation))
 
 (defun blame-reveal--expand-blame-data-sync (start-line end-line)
   "Synchronously expand blame data to include START-LINE to END-LINE."
-  (setq blame-reveal--loading t)  ;; 关键：设置加载标志
-  (blame-reveal--start-loading-animation)
+  (unless (blame-reveal--state-start 'expansion 'sync
+                                     (list :start-line start-line
+                                           :end-line end-line))
+    (cl-return-from blame-reveal--expand-blame-data-sync nil))
+  
   (condition-case err
       (let ((new-data (blame-reveal--get-blame-data-range start-line end-line)))
-
+        
         (if (null new-data)
-            (message "No new blame data in range %d-%d" start-line end-line)
-
-          ;; Merge with existing data
+            (progn
+              (message "No new blame data in range %d-%d" start-line end-line)
+              (blame-reveal--state-complete))
+          
+          (blame-reveal--state-transition 'processing)
+          
           (let ((existing-lines (make-hash-table :test 'equal))
                 (added-count 0))
-            ;; Mark existing lines
             (dolist (entry blame-reveal--blame-data)
               (puthash (car entry) t existing-lines))
-
-            ;; Add new lines
+            
             (dolist (entry new-data)
               (unless (gethash (car entry) existing-lines)
                 (push entry blame-reveal--blame-data)
                 (setq added-count (1+ added-count))))
-
+            
             (when (> added-count 0)
-              ;; Sort by line number
               (setq blame-reveal--blame-data
                     (sort blame-reveal--blame-data
                           (lambda (a b) (< (car a) (car b)))))
-
-              ;; Update range
+              
               (if blame-reveal--blame-data-range
                   (setq blame-reveal--blame-data-range
                         (cons (min start-line (car blame-reveal--blame-data-range))
                               (max end-line (cdr blame-reveal--blame-data-range))))
                 (setq blame-reveal--blame-data-range
                       (cons start-line end-line)))
-
-              ;; Load commit info for visible area
+              
               (let ((visible-commits (blame-reveal--get-visible-commits)))
                 (dolist (commit visible-commits)
                   (blame-reveal--ensure-commit-info commit)))
-
-              ;; Update recent commits
+              
               (blame-reveal--update-recent-commits)
-
-              ;; Render expanded region
+              
+              (blame-reveal--state-transition 'rendering)
               (blame-reveal--render-expanded-region start-line end-line)
-
-              ;; Update header if cursor is in new region
+              
               (let ((current-line (line-number-at-pos)))
                 (when (and (>= current-line start-line)
                            (<= current-line end-line))
                   (blame-reveal--update-header)))
-
+              
               (message "Blame expanded (sync): +%d lines (total %d)"
-                       added-count (length blame-reveal--blame-data))))))
-
+                       added-count (length blame-reveal--blame-data)))))
+        
+        (blame-reveal--state-complete))
+    
     (error
-     ;; 错误时也要清理
-     (message "Error expanding git blame: %s" (error-message-string err))
-     nil))
-
-  ;; 无论成功还是失败，最后都要清理（放在 condition-case 外面）
-  (setq blame-reveal--loading nil)
-  (blame-reveal--stop-loading-animation))
+     (blame-reveal--state-error (error-message-string err))
+     nil)))
 
 (defun blame-reveal--get-commit-info (commit-hash)
   "Get commit info for COMMIT-HASH.
@@ -1699,24 +1812,19 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
 
 (defun blame-reveal--load-blame-data-async ()
   "Asynchronously load initial blame data."
+  (unless (blame-reveal--state-start 'initial 'async)
+    (cl-return-from blame-reveal--load-blame-data-async nil))
+  
   (let* ((use-lazy (blame-reveal--should-lazy-load-p))
          (range (when use-lazy (blame-reveal--get-visible-line-range)))
          (start-line (when use-lazy (car range)))
          (end-line (when use-lazy (cdr range))))
-
-    ;; Print loading message
+    
     (if use-lazy
         (message "Loading git blame (async, lazy): lines %d-%d..." start-line end-line)
       (message "Loading git blame (async, full)..."))
-
-    (blame-reveal--start-loading-animation)
-
-    ;; Start async process
+    
     (blame-reveal--start-async-blame
-     'blame-reveal--initial-load-process
-     'blame-reveal--initial-load-buffer
-     " *blame-initial-load*"
-     "blame-initial-load"
      start-line
      end-line
      (lambda (temp-buffer)
@@ -1724,10 +1832,18 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
 
 (defun blame-reveal--handle-initial-load-complete (temp-buffer use-lazy)
   "Handle completion of initial async blame loading from TEMP-BUFFER."
+  (unless (eq blame-reveal--state-status 'loading)
+    (message "[State] Unexpected complete in state %s" blame-reveal--state-status)
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (cl-return-from blame-reveal--handle-initial-load-complete nil))
+  
   (unwind-protect
       (when (buffer-live-p temp-buffer)
+        (blame-reveal--state-transition 'processing)
+        
         (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
-
+          
           (if blame-data
               (progn
                 (setq blame-reveal--blame-data blame-data)
@@ -1736,8 +1852,7 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
                 (setq blame-reveal--timestamps nil)
                 (setq blame-reveal--recent-commits nil)
                 (setq blame-reveal--all-commits-loaded nil)
-
-                ;; Set range
+                
                 (if use-lazy
                     (let* ((range (blame-reveal--get-visible-line-range))
                            (start-line (car range))
@@ -1747,119 +1862,96 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
                                (length blame-data) start-line end-line))
                   (setq blame-reveal--blame-data-range nil)
                   (message "Git blame loaded (async, full): %d lines" (length blame-data)))
-
-                ;; Load commit info incrementally
+                
+                (blame-reveal--state-transition 'rendering)
                 (blame-reveal--load-commits-incrementally)
-
-                ;; Initial render
-                (blame-reveal--render-visible-region))
-
-            (message "No git blame data available"))))
-
-    ;; Cleanup - 无论成功失败都要清理（unwind-protect 保证一定执行）
+                (blame-reveal--render-visible-region)
+                
+                (blame-reveal--state-complete))
+            
+            (blame-reveal--state-error "No git blame data available"))))
+    
     (when (buffer-live-p temp-buffer)
-      (kill-buffer temp-buffer))
-    (setq blame-reveal--initial-load-buffer nil)
-    (setq blame-reveal--initial-load-process nil)
-    (setq blame-reveal--loading nil)
-    (blame-reveal--stop-loading-animation)))
+      (kill-buffer temp-buffer))))
 
 (defun blame-reveal--expand-blame-data-async (start-line end-line)
   "Asynchronously expand blame data to include START-LINE to END-LINE."
-  ;; Record pending expansion and set flag
-  (setq blame-reveal--pending-expansion (cons start-line end-line))
-  (setq blame-reveal--is-expanding t)
-  (setq blame-reveal--loading t)  ;; 关键：设置加载标志
-
-  (blame-reveal--start-loading-animation)
-
+  (unless (blame-reveal--state-start 'expansion 'async
+                                     (list :start-line start-line
+                                           :end-line end-line))
+    (cl-return-from blame-reveal--expand-blame-data-async nil))
+  
   (blame-reveal--start-async-blame
-   'blame-reveal--expansion-process
-   'blame-reveal--expansion-buffer
-   " *blame-expansion*"
-   "blame-expand"
    start-line
    end-line
    (lambda (temp-buffer)
-     (blame-reveal--handle-expansion-complete temp-buffer start-line end-line))
-   ;; Error handler: cleanup expansion-specific state
-   (lambda ()
-     (setq blame-reveal--pending-expansion nil)
-     (setq blame-reveal--is-expanding nil)
-     (setq blame-reveal--loading nil)  ;; 错误时也要清理
-     (blame-reveal--stop-loading-animation))))
+     (blame-reveal--handle-expansion-complete temp-buffer start-line end-line))))
+
 
 (defun blame-reveal--handle-expansion-complete (temp-buffer start-line end-line)
   "Handle completion of async blame expansion from TEMP-BUFFER."
+  (unless (eq blame-reveal--state-status 'loading)
+    (message "[State] Unexpected complete in state %s" blame-reveal--state-status)
+    (when (buffer-live-p temp-buffer)
+      (kill-buffer temp-buffer))
+    (cl-return-from blame-reveal--handle-expansion-complete nil))
+  
   (unwind-protect
       (when (buffer-live-p temp-buffer)
+        (blame-reveal--state-transition 'processing)
+        
         (let ((new-data (blame-reveal--parse-blame-output temp-buffer)))
-
+          
           (if (null new-data)
-              (message "No new blame data in range %d-%d" start-line end-line)
-
-            ;; Merge with existing data
+              (progn
+                (message "No new blame data in range %d-%d" start-line end-line)
+                (blame-reveal--state-complete))
+            
             (let ((existing-lines (make-hash-table :test 'equal))
                   (added-count 0)
                   (new-commits (make-hash-table :test 'equal)))
-              ;; Mark existing lines
               (dolist (entry blame-reveal--blame-data)
                 (puthash (car entry) t existing-lines))
-
-              ;; Add new lines and track new commits
+              
               (dolist (entry new-data)
                 (unless (gethash (car entry) existing-lines)
                   (push entry blame-reveal--blame-data)
                   (setq added-count (1+ added-count))
-                  ;; Track which commits are new
                   (puthash (cdr entry) t new-commits)))
-
+              
               (when (> added-count 0)
-                ;; Sort by line number
                 (setq blame-reveal--blame-data
                       (sort blame-reveal--blame-data
                             (lambda (a b) (< (car a) (car b)))))
-
-                ;; Update range
+                
                 (if blame-reveal--blame-data-range
                     (setq blame-reveal--blame-data-range
                           (cons (min start-line (car blame-reveal--blame-data-range))
                                 (max end-line (cdr blame-reveal--blame-data-range))))
                   (setq blame-reveal--blame-data-range
                         (cons start-line end-line)))
-
-                ;; Load commit info ONLY for new commits
+                
                 (maphash (lambda (commit _)
                            (blame-reveal--ensure-commit-info commit))
                          new-commits)
-
-                ;; Update recent commits
+                
                 (blame-reveal--update-recent-commits)
-
-                ;; Clear expanding flag BEFORE rendering
-                (setq blame-reveal--is-expanding nil)
-
-                ;; Render only expanded region (no flicker)
+                
+                (blame-reveal--state-transition 'rendering)
                 (blame-reveal--render-expanded-region start-line end-line)
-
-                ;; Update header if cursor is in new region
+                
                 (let ((current-line (line-number-at-pos)))
                   (when (and (>= current-line start-line)
                              (<= current-line end-line))
                     (blame-reveal--update-header)))
-
+                
                 (message "Blame expanded: +%d lines (total %d)"
-                         added-count (length blame-reveal--blame-data)))))))
-
-    ;; Cleanup - 无论成功失败都要清理（unwind-protect 保证一定执行）
+                         added-count (length blame-reveal--blame-data)))))
+          
+          (blame-reveal--state-complete)))
+    
     (when (buffer-live-p temp-buffer)
-      (kill-buffer temp-buffer))
-    (setq blame-reveal--expansion-buffer nil)
-    (setq blame-reveal--expansion-process nil)
-    (setq blame-reveal--pending-expansion nil)
-    (setq blame-reveal--is-expanding nil)
-    (setq blame-reveal--loading nil)
-    (blame-reveal--stop-loading-animation)))
+      (kill-buffer temp-buffer))))
 
 
 ;;;; Lazy Loading Functions
@@ -1879,28 +1971,21 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
            (<= end-line current-end)))))
 
 (defun blame-reveal--ensure-range-loaded (start-line end-line)
-  "Ensure blame data is loaded for range START-LINE to END-LINE.
-Uses sync or async based on configuration."
+  "Ensure blame data is loaded for range START-LINE to END-LINE."
   (unless (blame-reveal--is-range-loaded-p start-line end-line)
     (when blame-reveal--blame-data-range
       (let ((current-start (car blame-reveal--blame-data-range))
             (current-end (cdr blame-reveal--blame-data-range)))
         (when (or (< start-line current-start)
                   (> end-line current-end))
-          ;; 关键：如果已经在加载中，不要重复触发
-          (unless blame-reveal--loading
-            ;; Check if there's already a pending expansion that covers this range
-            (unless (and blame-reveal--pending-expansion
-                         (let ((pending-start (car blame-reveal--pending-expansion))
-                               (pending-end (cdr blame-reveal--pending-expansion)))
-                           (and (<= pending-start start-line)
-                                (>= pending-end end-line))))
-              ;; Need to load more data
-              (let ((new-start (min start-line current-start))
-                    (new-end (max end-line current-end)))
-                (if (blame-reveal--should-use-async-p)
-                    (blame-reveal--expand-blame-data-async new-start new-end)
-                  (blame-reveal--expand-blame-data-sync new-start new-end))))))))))
+          
+          ;; 使用状态机检查是否可以开始
+          (when (not (blame-reveal--state-is-busy-p))
+            (let ((new-start (min start-line current-start))
+                  (new-end (max end-line current-end)))
+              (if (blame-reveal--should-use-async-p)
+                  (blame-reveal--expand-blame-data-async new-start new-end)
+                (blame-reveal--expand-blame-data-sync new-start new-end)))))))))
 
 (defun blame-reveal--expand-blame-data (start-line end-line)
   "Expand blame data to include START-LINE to END-LINE."
@@ -2857,19 +2942,24 @@ Only recent commits (top N by recency among loaded commits) are permanently visi
 (defun blame-reveal--load-blame-data ()
   "Load git blame data using sync or async based on configuration.
 Use lazy loading for large files, full loading for small files."
-  (unless blame-reveal--loading
-    (setq blame-reveal--loading t)
+  ;; 改用状态机检查
+  (when (not (blame-reveal--state-is-busy-p))
     (condition-case err
         (if (blame-reveal--should-use-async-p)
             (blame-reveal--load-blame-data-async)
           (blame-reveal--load-blame-data-sync))
       (error
-       (setq blame-reveal--loading nil)
+       (blame-reveal--state-error (error-message-string err))
        (message "Failed to load git blame: %s" (error-message-string err))))))
 
 (defun blame-reveal--full-update ()
   "Full update: reload blame data and render visible region."
   (interactive)
+  ;; 取消当前操作
+  (when (blame-reveal--state-is-busy-p)
+    (blame-reveal--state-cancel "full update requested"))
+  
+  ;; 重置数据
   (setq blame-reveal--blame-data nil
         blame-reveal--blame-data-range nil
         blame-reveal--commit-info nil
@@ -2877,6 +2967,8 @@ Use lazy loading for large files, full loading for small files."
         blame-reveal--timestamps nil
         blame-reveal--recent-commits nil
         blame-reveal--all-commits-loaded nil)
+  
+  ;; 重新加载
   (blame-reveal--load-blame-data))
 
 
@@ -2932,30 +3024,24 @@ Also triggers commit info loading when cursor stops."
          #'blame-reveal--update-header-impl)))
 
 (defun blame-reveal--scroll-handler-impl (buf)
-  "Implementation of scroll handler for buffer BUF.
-Only loads blame data (git blame), does NOT load commit info (git show).
-Commit info will be loaded later when cursor stops moving."
+  "Implementation of scroll handler for buffer BUF."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (when blame-reveal-mode
-        ;; If using lazy loading, check if we need to load more blame data
         (when blame-reveal--blame-data-range
           (let* ((range (blame-reveal--get-visible-line-range))
                  (start-line (car range))
                  (end-line (cdr range))
                  (current-start (car blame-reveal--blame-data-range))
                  (current-end (cdr blame-reveal--blame-data-range)))
-            ;; Only trigger expansion if scrolled beyond current range
             (when (or (< start-line current-start)
                       (> end-line current-end))
               (blame-reveal--ensure-range-loaded start-line end-line))))
-
-        ;; Only render if not expanding (async mode) or always render (sync mode)
-        (unless (and (blame-reveal--should-use-async-p)
-                     blame-reveal--is-expanding)
-          ;; Render visible region with whatever data we have
+        
+        ;; 只在非扩展状态时渲染（状态机管理）
+        (unless (and (eq blame-reveal--state-status 'loading)
+                     (eq blame-reveal--state-operation 'expansion))
           (blame-reveal--render-visible-region)
-          ;; Only update sticky header if layout is not 'none
           (unless (eq blame-reveal-display-layout 'none)
             (blame-reveal--update-sticky-header)))))))
 
@@ -3217,14 +3303,14 @@ and debugging color gradient issues."
          per-commit-pct
          blame-reveal-gradient-quality)))))
 
-(defun blame-reveal--cleanup-async-processes ()
-  "Cleanup all async processes and buffers."
-  (blame-reveal--cleanup-async-state 'blame-reveal--expansion-process
-                                     'blame-reveal--expansion-buffer)
-  (blame-reveal--cleanup-async-state 'blame-reveal--initial-load-process
-                                     'blame-reveal--initial-load-buffer)
-  (setq blame-reveal--pending-expansion nil)
-  (setq blame-reveal--is-expanding nil))
+;; (defun blame-reveal--cleanup-async-processes ()
+;;   "Cleanup all async processes and buffers."
+;;   (blame-reveal--cleanup-async-state 'blame-reveal--expansion-process
+;;                                      'blame-reveal--expansion-buffer)
+;;   (blame-reveal--cleanup-async-state 'blame-reveal--initial-load-process
+;;                                      'blame-reveal--initial-load-buffer)
+;;   (setq blame-reveal--pending-expansion nil)
+;;   (setq blame-reveal--is-expanding nil))
 
 ;;;###autoload
 (defun blame-reveal-clear-auto-cache ()
@@ -3435,6 +3521,7 @@ This function always uses built-in git."
                 emulation-mode-map-alists))
 
     (blame-reveal--stop-loading-animation)
+    (blame-reveal--state-cancel "mode disabled")
 
     (when blame-reveal--temp-overlay-timer
       (cancel-timer blame-reveal--temp-overlay-timer)
@@ -3463,9 +3550,14 @@ This function always uses built-in git."
       (cancel-timer blame-reveal--scroll-timer)
       (setq blame-reveal--scroll-timer nil))
 
-    (blame-reveal--cleanup-async-processes)
+ (setq blame-reveal--state-status 'idle
+          blame-reveal--state-operation nil
+          blame-reveal--state-mode nil
+          blame-reveal--state-metadata nil
+          blame-reveal--state-process nil
+          blame-reveal--state-buffer nil)
 
-    (setq blame-reveal--loading nil)
+ (setq blame-reveal--loading nil)
     (setq blame-reveal--auto-days-cache nil)
     (setq blame-reveal--blame-data-range nil)
     (setq blame-reveal--all-commits-loaded nil)
