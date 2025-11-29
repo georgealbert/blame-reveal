@@ -894,8 +894,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
     ;; Use git log --no-walk instead of git show  --no-patch
     (when (zerop (call-process "git" nil t nil "log"
                                "--no-walk"
-                               "--format=%h|%an|%ad|%s|%at"
-                               "--date=short"
+                               "--format=%h|%an|%ar|%s|%at"
+                               ;; "--date=short"
                                commit-hash))
       (goto-char (point-min))
       (when (re-search-forward "\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([0-9]+\\)" nil t)
@@ -1484,13 +1484,22 @@ The days limit comes from `blame-reveal-recent-days-limit':
             (mapcar #'car commit-timestamps)))))
 
 
+(defun blame-reveal--format-time-string (time tz)
+  "Parse time string by timestamp and timezone."
+  (let* ((time-format "%Y/%m/%d")
+         (tz-in-second (and (string-search "%z" time-format)
+                            (car (last (parse-time-string tz))))))
+    (format-time-string time-format
+                        (seconds-to-time time)
+                        tz-in-second)))
+
+
 (defun blame-reveal--update-margin-overlay (ov commit-hash color)
   "Update commit message on left margin."
   (let* ((commit-info (gethash commit-hash blame-reveal--commit-info))
-         (short-id  (nth 0 commit-info))
          (author  (nth 1 commit-info))
-         (date  (nth 2 commit-info))
-         (commit-msg (concat date " " short-id " " author)))
+         (date (blame-reveal--format-time-string (nth 4 commit-info) "CST"))
+         (commit-msg (concat date " " (substring commit-hash 0 6) " " author)))
     (overlay-put
      ov 'before-string
      (propertize
