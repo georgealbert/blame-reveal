@@ -1876,7 +1876,7 @@ Returns (START-LINE . END-LINE)."
     (unless (facep face-name)
       (custom-declare-face face-name
                            ;; `((t :background ,color :foreground ,color :inherit font-lock-comment-face :height 0.75))
-                           `((t :background ,color :inherit font-lock-comment-face :height ,blame-reveal-margin-height))
+                           `((t :background ,color :inherit font-lock-comment-face :height ,blame-reveal-margin-height :overline t))
                            (format "Face for git blame color %s" color)
                            :group 'blame-reveal))
     face-name))
