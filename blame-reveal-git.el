@@ -350,7 +350,8 @@ Returns (SHORT-HASH AUTHOR DATE SUMMARY TIMESTAMP DESCRIPTION)."
     (when (zerop (call-process "git" nil t nil "log"
                                "--no-walk"
                                "--no-patch"
-                               "--format=%h|%an|%ar|%s|%at%n--BODY--%n%b"
+                               "--format=%h|%an|%ad|%s|%at%n--BODY--%n%b"
+                               "--date=iso"
                                commit-hash))
       (goto-char (point-min))
       (when (re-search-forward "\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([^|]+\\)|\\([0-9]+\\)" nil t)
