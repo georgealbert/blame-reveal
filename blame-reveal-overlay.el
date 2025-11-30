@@ -160,10 +160,34 @@ Preserves :type field."
   (let ((face-name (intern (format "blame-reveal-face-%s" color))))
     (unless (facep face-name)
       (custom-declare-face face-name
-                           `((t :background ,color :foreground ,color))
+                           `((t :background ,color :inherit font-lock-comment-face :height ,blame-reveal-margin-height :overline t))
                            (format "Face for git blame color %s" color)
                            :group 'blame-reveal))
     face-name))
+
+(defun blame-reveal--format-time-string (time tz)
+  "Parse time string by timestamp and timezone."
+  (let* ((time-format blame-reveal-margin-time-format)
+         (tz-in-second (and (string-search "%z" time-format)
+                            (car (last (parse-time-string tz))))))
+    (format-time-string time-format
+                        (seconds-to-time time)
+                        tz-in-second)))
+
+(defun blame-reveal--update-margin-overlay (ov color commit-hash)
+  "Update commit message on left margin."
+  (let* ((commit-info (gethash commit-hash blame-reveal--commit-info))
+         (author  (nth 1 commit-info))
+         (date (blame-reveal--format-time-string (nth 4 commit-info) nil))
+         (commit-msg (concat date " " (substring commit-hash 0 6) " " author)))
+    (overlay-put
+     ov 'before-string
+     (propertize
+      "o" 'display
+      (list (list 'margin 'left-margin)
+            (propertize (concat commit-msg
+                                (make-string (max 0 (- blame-reveal--margin-width (length commit-msg))) ?\s))
+                        'face color))))))
 
 (defun blame-reveal--create-fringe-overlay (line-number color commit-hash)
   "Create fringe overlay at LINE-NUMBER with COLOR and COMMIT-HASH."
@@ -177,11 +201,13 @@ Preserves :type field."
                           (blame-reveal--create-managed-overlay 
                            pos pos 'fringe
                            (list :commit commit-hash :line line-number)))))
-        (overlay-put overlay 'before-string
-                     (propertize "!" 'display
-                                 (list blame-reveal-style
-                                       'blame-reveal-full
-                                       fringe-face)))
+
+        ;; (overlay-put overlay 'before-string
+        ;;              (propertize "!" 'display
+        ;;                          (list blame-reveal-style
+        ;;                                'blame-reveal-full
+        ;;                                fringe-face)))
+        (blame-reveal--update-margin-overlay overlay fringe-face commit-hash)
         (when (overlay-buffer overlay)
           (blame-reveal--update-overlay-metadata 
            overlay 

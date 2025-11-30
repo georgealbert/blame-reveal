@@ -378,6 +378,26 @@ Example schemes:
                  (blame-reveal--recolor-and-render))))))
   :group 'blame-reveal)
 
+(defcustom blame-reveal-margin-height 0.75
+  "Font height for commit message in left margin.
+1.0 means default size, 0.75 means 75% of default, 1.1 means 110%.
+Left margin width varies proportionally based on this value."
+  :type 'number
+  :group 'blame-reveal)
+
+(defcustom blame-reveal--margin-width 32
+  "Left margin width for IDEA style commit message. Default is 32 char width.
+还需要根据blame-reveal--ensure-fringe-face中的height的比例计算实际的left margin宽度.
+如height是0.75，那么实际宽度是32*0.75"
+  :type 'number
+  :group 'blame-reveal)
+
+(defcustom blame-reveal-margin-time-format "%Y/%m/%d"
+  "Format for time strings in left margin."
+  :type 'string
+  :group 'blame-reveal)
+
+
 ;;; Performance Customization
 
 (defcustom blame-reveal-render-margin 50
@@ -489,6 +509,11 @@ For small files, sync loading is actually faster due to less overhead."
             ;; Load blame data
             (blame-reveal--load-blame-data)
 
+            ;; 因为在blame-reveal--ensure-fringe-face margin的字体height是0.75，所以left-margin-width只需要原来的0.75即可
+            (setq left-margin-width (ceiling (* blame-reveal-margin-height blame-reveal--margin-width)))
+            (message "blame-reveal-mode left-margin-width: %d" left-margin-width)
+            (set-window-buffer (selected-window) (current-buffer))
+
             (add-hook 'after-save-hook #'blame-reveal--full-update nil t)
             (add-hook 'window-scroll-functions #'blame-reveal--scroll-handler nil t)
             (add-hook 'post-command-hook #'blame-reveal--update-header nil t)
@@ -502,6 +527,9 @@ For small files, sync loading is actually faster due to less overhead."
             (blame-reveal--setup-theme-advice))))
 
     ;; Cleanup when disabling mode
+    (setq left-margin-width 0)
+    (set-window-buffer (selected-window) (current-buffer))
+
     (setq emulation-mode-map-alists
           (delq 'blame-reveal--emulation-alist
                 emulation-mode-map-alists))
