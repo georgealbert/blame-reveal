@@ -133,61 +133,194 @@ See all options: M-x customize-group RET blame-reveal"
 
 (defcustom blame-reveal-header-format-function
   #'blame-reveal-format-header-default
-  "Function to format commit information for header display.
+  "Function to format commit information for block-style header display.
 
-The function should accept three arguments:
-  COMMIT-HASH: commit hash string
-  COMMIT-INFO: commit info tuple (short-hash author date summary timestamp description)
-  COLOR: base color for this commit (hex string)
+The function receives three arguments:
+  COMMIT-HASH - Full commit hash string (40 chars)
+  COMMIT-INFO - Tuple: (short-hash author date summary timestamp description)
+  COLOR       - Hex color string for this commit (e.g., \"#6699cc\")
 
-And return a `blame-reveal-commit-display' struct with:
-  :lines - List of strings (one per line)
-  :faces - List of faces (one per line, can reference COLOR)
-  :color - Base color for fringe indicators
+Returns a =blame-reveal-commit-display' struct with:
+  :lines - List of strings (multiple lines allowed for block style)
+  :faces - List of face specs (one per line, can reference COLOR)
+  :color - Color string for fringe indicators
 
-The system automatically adapts for different contexts:
-  - Normal header: shows full multi-line format
-  - Inline header: auto-compresses to single line
-  - Sticky header: reuses appropriate format
+This format is ONLY used for block-style headers.
+Inline and margin styles have their own format functions.
 
-Example: Minimal style
+Example - Minimal single-line format:
   (setq blame-reveal-header-format-function
     (lambda (commit-hash info color)
-      (pcase-let ((`(,hash ,_author ,_date ,msg ,_ ,_) info))
+      (pcase-let ((=(,hash ,_author ,_date ,msg ,_ ,_) info))
         (make-blame-reveal-commit-display
          :lines (list (format \"%s: %s\" hash msg))
-         :faces (list `(:foreground ,color))
+         :faces (list =(:foreground ,color :weight bold))
+         :color color))))
+
+Example - Multi-line format with emphasis:
+  (setq blame-reveal-header-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((=(,hash ,author ,date ,msg ,_ ,_) info))
+        (make-blame-reveal-commit-display
+         :lines (list
+                 (format \"■ %s\" msg)
+                 (format \"  %s • %s • %s\" author date hash))
+         :faces (list
+                 =(:foreground ,color :weight bold :height 1.1)
+                 =(:foreground ,color :height 0.9))
          :color color))))"
   :type 'function
   :group 'blame-reveal)
 
-;;; Display Customization
+(defcustom blame-reveal-inline-format-function nil
+  "Function to format commit information for inline-style header.
+If nil, uses default compact format.
 
-(defcustom blame-reveal-style 'left-fringe
-  "Which fringe to use for blame indicators."
-  :type '(choice (const left-fringe)
-                 (const right-fringe))
+The function receives the same three arguments as block format.
+
+Returns a =blame-reveal-commit-display' struct with:
+  :lines - List containing EXACTLY ONE string (enforced at runtime)
+  :faces - List containing exactly one face spec
+  :color - Color string for fringe indicators
+
+IMPORTANT: Inline headers appear after the first line of code.
+Keep the format compact and single-line.
+
+Example - Compact format with hash and message:
+  (setq blame-reveal-inline-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((=(,hash ,author ,_date ,msg ,_ ,_) info))
+        (make-blame-reveal-commit-display
+         :lines (list (format \"[%s] %s - %s\"
+                       (substring hash 0 5)
+                       (blame-reveal--abbreviate-author author)
+                       (substring msg 0 (min 40 (length msg)))))
+         :faces (list =(:foreground ,color :height 0.95))
+         :color color))))
+
+Example - Author and time only:
+  (setq blame-reveal-inline-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((=(,_hash ,author ,date ,_msg ,_ ,_) info))
+        (make-blame-reveal-commit-display
+         :lines (list (format \"%s · %s\"
+                       (blame-reveal--abbreviate-author author)
+                       (blame-reveal--shorten-time date)))
+         :faces (list =(:foreground ,color))
+         :color color))))"
+  :type '(choice (const :tag "Default compact format" nil)
+                 (function :tag "Custom function"))
   :group 'blame-reveal)
 
-(defcustom blame-reveal-header-position 'before-block
-  "Position of commit message header relative to code block.
-- `before-block': Show header above the first line of the block (default)
-- `after-first-line': Show header after the first line of the block
+(defcustom blame-reveal-margin-format-function nil
+  "Function to format commit information for margin-style header.
+If nil, uses default compact format (Author · Date).
 
-When set to `after-first-line':
-  - Header appears immediately after the first line of code
-  - Maintains fixed distance from the code
-  - For `compact' layout: shows as single line (msg · author · hash)
-  - For `line' layout: shows only commit message
-  - `full' layout is not supported in this mode (falls back to compact)"
-  :type '(choice (const :tag "Before block (above first line)" before-block)
-                 (const :tag "After first line (inline style)" after-first-line))
+The function receives the same three arguments as block format.
+
+Returns a =blame-reveal-commit-display' struct with:
+  :lines - List containing EXACTLY ONE string (enforced at runtime)
+  :faces - List containing exactly one face spec
+  :color - Color string for fringe indicators
+
+IMPORTANT: Margin headers appear in the window margin.
+Both left and right margins use the same format.
+Keep format very compact (typically 15-25 characters).
+
+Example - Hash and time only:
+  (setq blame-reveal-margin-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((=(,hash ,_author ,date ,_ ,_ ,_) info))
+        (make-blame-reveal-commit-display
+         :lines (list (format \"%s %s\"
+                       (substring hash 0 4)
+                       (blame-reveal--shorten-time date)))
+         :faces (list =(:foreground ,color :height 0.9))
+         :color color))))
+
+Example - Author name only:
+  (setq blame-reveal-margin-format-function
+    (lambda (commit-hash info color)
+      (pcase-let ((=(,_hash ,author ,_date ,_ ,_ ,_) info))
+        (let ((short-name (blame-reveal--abbreviate-author author)))
+          (make-blame-reveal-commit-display
+           :lines (list (substring short-name 0 (min 12 (length short-name))))
+           :faces (list =(:foreground ,color :weight bold :height 0.9))
+           :color color)))))"
+  :type '(choice (const :tag "Default (Author · Date)" nil)
+                 (function :tag "Custom function"))
+  :group 'blame-reveal)
+
+;;; Display Customization
+
+(defcustom blame-reveal-fringe-side 'left-fringe
+  "Which fringe to display blame indicators.
+This is the core visual element showing commit age with colors."
+  :type '(choice (const :tag "Left fringe" left-fringe)
+                 (const :tag "Right fringe" right-fringe))
+  :group 'blame-reveal)
+
+(defcustom blame-reveal-header-style 'block
+  "How to display commit information header.
+
+Styles:
+- `block': Show header as a separate block above the code
+- `inline': Show header inline after the first line of code
+- `margin': Show compact header in window margin
+
+The header provides detailed commit info (author, date, message)
+while the fringe shows visual age indicators."
+  :type '(choice (const :tag "Block above code" block)
+                 (const :tag "Inline after first line" inline)
+                 (const :tag "In margin" margin))
   :set (lambda (symbol value)
          (set-default symbol value)
          (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
            (dolist (buffer (buffer-list))
              (with-current-buffer buffer
                (when blame-reveal-mode
+                 ;; Restore margins when switching away from margin style
+                 (when (and (not (eq value 'margin))
+                            (blame-reveal--is-margin-mode-p))
+                   (blame-reveal--restore-window-margins))
+                 ;; Setup margins when switching to margin style
+                 (when (and (eq value 'margin)
+                            (not (blame-reveal--is-margin-mode-p)))
+                   (blame-reveal--ensure-window-margins))
+                 ;; Refresh display
+                 (when blame-reveal--header-overlay
+                   (delete-overlay blame-reveal--header-overlay)
+                   (setq blame-reveal--header-overlay nil))
+                 (blame-reveal--update-header-impl))))))
+  :group 'blame-reveal)
+
+(defcustom blame-reveal-margin-side 'left
+  "Which margin to use when =blame-reveal-header-style' is =margin'.
+
+Left margin:
+  - More visible but takes space from code area
+  - Uses compact format by default (Author · Date)
+  - Recommended width: 15-25 characters
+
+Right margin:
+  - Less intrusive, doesn't affect code indentation
+  - Uses compressed inline format by default (full commit info)
+  - Recommended width: 25-40 characters
+
+Only takes effect when header style is set to margin."
+  :type '(choice (const :tag "Left margin (compact format)" left)
+                 (const :tag "Right margin (full format)" right))
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (and (boundp 'blame-reveal-mode) blame-reveal-mode
+                    (eq blame-reveal-header-style 'margin))
+           (dolist (buffer (buffer-list))
+             (with-current-buffer buffer
+               (when blame-reveal-mode
+                 ;; Restore old margin and setup new one
+                 (blame-reveal--restore-window-margins)
+                 (blame-reveal--ensure-window-margins)
+                 ;; Refresh display
                  (when blame-reveal--header-overlay
                    (delete-overlay blame-reveal--header-overlay)
                    (setq blame-reveal--header-overlay nil))
@@ -506,6 +639,7 @@ For small files, sync loading is actually faster due to less overhead."
           (delq 'blame-reveal--emulation-alist
                 emulation-mode-map-alists))
 
+    (blame-reveal--restore-window-margins)
     (blame-reveal--stop-loading-animation)
     (blame-reveal--state-cancel "mode disabled")
 

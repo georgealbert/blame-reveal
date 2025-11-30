@@ -101,7 +101,7 @@ Light theme: intensity controls darkness (0=light/invisible, 1=dark/visible)."
                 (overlay-put ov 'blame-reveal-loading t)
                 (overlay-put ov 'before-string
                              (propertize "!" 'display
-                                         (list blame-reveal-style
+                                         (list blame-reveal-fringe-side
                                                bitmap
                                                face)))
                 (push ov overlays)

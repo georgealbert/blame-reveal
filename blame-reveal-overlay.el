@@ -179,7 +179,7 @@ Preserves :type field."
                            (list :commit commit-hash :line line-number)))))
         (overlay-put overlay 'before-string
                      (propertize "!" 'display
-                                 (list blame-reveal-style
+                                 (list blame-reveal-fringe-side
                                        'blame-reveal-full
                                        fringe-face)))
         (when (overlay-buffer overlay)
@@ -236,7 +236,7 @@ Returns list of created/reused overlays."
                        (list :commit commit-hash :line line-number))))
         (overlay-put overlay 'before-string
                      (propertize "!" 'display
-                                 (list blame-reveal-style
+                                 (list blame-reveal-fringe-side
                                        'blame-reveal-full
                                        fringe-face)))
         overlay))))

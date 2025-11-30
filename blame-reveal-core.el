@@ -69,6 +69,15 @@
 (defvar-local blame-reveal--color-strategy nil
   "Current color strategy instance.")
 
+(defvar-local blame-reveal--margin-width nil
+  "Calculated margin width for current buffer in margin header style.")
+
+(defvar-local blame-reveal--original-left-margin-width nil
+  "Original left-margin-width before margin style was enabled.")
+
+(defvar-local blame-reveal--original-right-margin-width nil
+  "Original right-margin-width before margin style was enabled.")
+
 ;;; Data Cache Variables
 
 (defvar-local blame-reveal--color-map nil
