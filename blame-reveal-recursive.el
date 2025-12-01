@@ -118,8 +118,7 @@ For example, 'abc123^' returns 'abc123'."
 ;;; Asynchronous Loading
 
 (defun blame-reveal--load-blame-at-revision-async (revision)
-  "Load blame data at REVISION asynchronously.
-Always loads complete file for proper recursive blame navigation."
+  "Load blame data at REVISION asynchronously."
   (let* ((file (buffer-file-name))
          (git-root (and file (vc-git-root file)))
          (source-buffer (current-buffer)))
@@ -149,7 +148,9 @@ Always loads complete file for proper recursive blame navigation."
                    (lambda ()
                      (blame-reveal--handle-recursive-load-error revision file)))
         :noquery t)
-       temp-buffer))))
+       temp-buffer)
+      ;; Store source file for verification
+      (process-put blame-reveal--state-process 'source-file file))))
 
 (defun blame-reveal--handle-recursive-load-complete (temp-buffer revision file)
   "Handle completion of recursive blame loading from TEMP-BUFFER."
@@ -160,27 +161,34 @@ Always loads complete file for proper recursive blame navigation."
     (when (buffer-live-p temp-buffer)
       (kill-buffer temp-buffer))
     (cl-return-from blame-reveal--handle-recursive-load-complete nil))
+
   (unwind-protect
       (when (buffer-live-p temp-buffer)
-        (blame-reveal--state-transition 'processing)
-        (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
-          (if blame-data
-              (progn
-                (setq blame-reveal--current-revision revision)
-                (setq blame-reveal--revision-display
-                      (if (eq revision 'uncommitted)
-                          "Working Tree"
-                        (blame-reveal--get-commit-short-info revision)))
-                (blame-reveal--reset-data-structures blame-data)
-                (blame-reveal--state-transition 'rendering)
-                (blame-reveal--load-commits-incrementally)
-                (blame-reveal--smooth-transition-render)
-                (message "Loaded blame at %s (%d lines)"
-                         (or blame-reveal--revision-display revision)
-                         (length blame-data))
-                (blame-reveal--state-complete))
-            (blame-reveal--state-error "Failed to parse blame data")
-            (blame-reveal--handle-recursive-load-error revision file))))
+        (condition-case err
+            (progn
+              (blame-reveal--state-transition 'processing)
+              (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
+                (if blame-data
+                    (progn
+                      (setq blame-reveal--current-revision revision)
+                      (setq blame-reveal--revision-display
+                            (if (eq revision 'uncommitted)
+                                "Working Tree"
+                              (blame-reveal--get-commit-short-info revision)))
+                      (blame-reveal--reset-data-structures blame-data)
+                      (blame-reveal--state-transition 'rendering)
+                      (blame-reveal--load-commits-incrementally)
+                      (blame-reveal--smooth-transition-render)
+                      (message "Loaded blame at %s (%d lines)"
+                               (or blame-reveal--revision-display revision)
+                               (length blame-data))
+                      (blame-reveal--state-complete))
+                  (blame-reveal--state-error "Failed to parse blame data")
+                  (blame-reveal--handle-recursive-load-error revision file))))
+          (error
+           (blame-reveal--state-error (format "Recursive load error: %s" (error-message-string err)))
+           (blame-reveal--handle-recursive-load-error revision file))))
+    ;; Always clean up temp buffer
     (when (buffer-live-p temp-buffer)
       (kill-buffer temp-buffer))))
 

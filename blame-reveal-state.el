@@ -39,6 +39,8 @@ Returns t if started successfully."
         (progn
           (when (not (eq blame-reveal--state-status 'idle))
             (blame-reveal--state-cancel reason))
+          ;; Generate new process ID for this operation
+          (setq blame-reveal--process-id (blame-reveal--generate-process-id))
           (setq blame-reveal--state-status 'loading
                 blame-reveal--state-operation operation
                 blame-reveal--state-mode mode
@@ -46,15 +48,27 @@ Returns t if started successfully."
                 blame-reveal--state-process nil
                 blame-reveal--state-buffer nil)
           (blame-reveal--start-loading-animation)
-          (message "[State] Start: %s (%s) - %s" operation mode reason)
+          (message "[State] Start: %s (%s) - %s [ID: %s]"
+                   operation mode reason blame-reveal--process-id)
           t)
       (message "[State] Cannot start %s: %s" operation reason)
       nil)))
 
 (defun blame-reveal--state-set-async-resources (process buffer)
   "Set async PROCESS and BUFFER for current operation."
+  ;; Store process ID in process for verification
+  (when blame-reveal--process-id
+    (process-put process 'blame-reveal-process-id blame-reveal--process-id))
   (setq blame-reveal--state-process process
         blame-reveal--state-buffer buffer))
+
+(defun blame-reveal--state-verify-process (process)
+  "Verify PROCESS belongs to current operation.
+Returns t if valid, nil otherwise."
+  (let ((proc-id (process-get process 'blame-reveal-process-id)))
+    (and proc-id
+         blame-reveal--process-id
+         (equal proc-id blame-reveal--process-id))))
 
 (defun blame-reveal--state-transition (new-status)
   "Transition to NEW-STATUS."
@@ -75,20 +89,37 @@ Returns t if started successfully."
     (setq blame-reveal--state-buffer nil)))
 
 (defun blame-reveal--state-complete ()
-  "Complete current operation successfully."
-  (blame-reveal--stop-loading-animation)
-  (blame-reveal--state-cleanup-async)
-  (setq blame-reveal--state-status 'idle
-        blame-reveal--state-operation nil
-        blame-reveal--state-mode nil
-        blame-reveal--state-metadata nil)
+  "Complete current operation successfully.
+Ensures cleanup happens even if rendering fails."
+  (unwind-protect
+      (progn
+        (blame-reveal--stop-loading-animation)
+        (blame-reveal--state-cleanup-async))
+    ;; Always reset state
+    (setq blame-reveal--state-status 'idle
+          blame-reveal--state-operation nil
+          blame-reveal--state-mode nil
+          blame-reveal--state-metadata nil
+          blame-reveal--process-id nil))
   (message "[State] Complete"))
 
 (defun blame-reveal--state-error (error-msg)
-  "Handle error with ERROR-MSG."
+  "Handle error with ERROR-MSG.
+Ensures all resources are cleaned up even if cleanup fails."
   (message "[State] Error: %s" error-msg)
-  (blame-reveal--stop-loading-animation)
-  (blame-reveal--state-cleanup-async)
+  (unwind-protect
+      (progn
+        (blame-reveal--stop-loading-animation)
+        (blame-reveal--state-cleanup-async))
+    ;; Ensure resources are cleaned even if above fails
+    (ignore-errors
+      (when blame-reveal--header-overlay
+        (delete-overlay blame-reveal--header-overlay)
+        (setq blame-reveal--header-overlay nil))
+      (blame-reveal--clear-sticky-header)
+      (when blame-reveal--temp-overlay-timer
+        (cancel-timer blame-reveal--temp-overlay-timer)
+        (setq blame-reveal--temp-overlay-timer nil))))
   (setq blame-reveal--state-status 'error)
   (run-with-timer 0.1 nil
                   (lambda ()
@@ -96,17 +127,31 @@ Returns t if started successfully."
                       (setq blame-reveal--state-status 'idle
                             blame-reveal--state-operation nil
                             blame-reveal--state-mode nil
-                            blame-reveal--state-metadata nil)))))
+                            blame-reveal--state-metadata nil
+                            blame-reveal--process-id nil)))))
 
 (defun blame-reveal--state-cancel (reason)
-  "Cancel current operation for REASON."
+  "Cancel current operation for REASON.
+Ensures all resources are cleaned up."
   (message "[State] Cancel: %s" reason)
-  (blame-reveal--stop-loading-animation)
-  (blame-reveal--state-cleanup-async)
+  (unwind-protect
+      (progn
+        (blame-reveal--stop-loading-animation)
+        (blame-reveal--state-cleanup-async))
+    ;; Ensure cleanup even if errors occur
+    (ignore-errors
+      (when blame-reveal--header-overlay
+        (delete-overlay blame-reveal--header-overlay)
+        (setq blame-reveal--header-overlay nil))
+      (blame-reveal--clear-sticky-header)
+      (when blame-reveal--temp-overlay-timer
+        (cancel-timer blame-reveal--temp-overlay-timer)
+        (setq blame-reveal--temp-overlay-timer nil))))
   (setq blame-reveal--state-status 'idle
         blame-reveal--state-operation nil
         blame-reveal--state-mode nil
-        blame-reveal--state-metadata nil))
+        blame-reveal--state-metadata nil
+        blame-reveal--process-id nil))
 
 (defun blame-reveal--state-is-busy-p ()
   "Check if state machine is busy."

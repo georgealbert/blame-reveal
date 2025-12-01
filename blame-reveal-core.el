@@ -78,6 +78,16 @@
 (defvar-local blame-reveal--original-right-margin-width nil
   "Original right-margin-width before margin style was enabled.")
 
+;;; Process Tracking (for concurrency safety)
+
+(defvar-local blame-reveal--process-id nil
+  "Unique ID for current async process.
+Used to verify async callbacks belong to current operation.")
+
+(defun blame-reveal--generate-process-id ()
+  "Generate unique process ID."
+  (format "%s-%d" (buffer-name) (float-time)))
+
 ;;; Data Cache Variables
 
 (defvar-local blame-reveal--color-map nil
@@ -209,6 +219,32 @@ Returns list of (START-LINE COMMIT-HASH BLOCK-LENGTH)."
                      (<= block-start end-line)))
         (push (list block-start current-commit block-length) blocks)))
     (nreverse blocks)))
+
+;;; Extension Hooks
+
+(defvar blame-reveal-before-load-hook nil
+  "Hook run before loading git blame data.
+Functions are called with no arguments.")
+
+(defvar blame-reveal-after-load-hook nil
+  "Hook run after git blame data is loaded successfully.
+Functions are called with one argument: number of lines loaded.")
+
+(defvar blame-reveal-before-render-hook nil
+  "Hook run before rendering blame overlays.
+Functions are called with two arguments: start-line and end-line.")
+
+(defvar blame-reveal-after-render-hook nil
+  "Hook run after rendering blame overlays.
+Functions are called with two arguments: start-line and end-line.")
+
+(defvar blame-reveal-mode-on-hook nil
+  "Hook run when blame-reveal-mode is enabled.
+Functions are called with no arguments.")
+
+(defvar blame-reveal-mode-off-hook nil
+  "Hook run when blame-reveal-mode is disabled.
+Functions are called with no arguments.")
 
 (provide 'blame-reveal-core)
 ;;; blame-reveal-core.el ends here

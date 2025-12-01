@@ -183,6 +183,7 @@ Reuses existing overlays when possible to minimize visual disruption."
            (blocks (blame-reveal--find-block-boundaries
                     blame-reveal--blame-data start-line end-line))
            (rendered-lines (make-hash-table :test 'eql)))
+      (run-hook-with-args 'blame-reveal-before-render-hook start-line end-line)
       ;; Ensure commit info is loaded for visible blocks
       (dolist (block blocks)
         (let ((commit-hash (nth 1 block)))
@@ -217,6 +218,7 @@ Reuses existing overlays when possible to minimize visual disruption."
                        (not (gethash line rendered-lines))
                        (or (< line start-line) (> line end-line)))
               (blame-reveal--unregister-overlay overlay)))))
+      (run-hook-with-args 'blame-reveal-after-render-hook start-line end-line)
       ;; Re-trigger header update
       (blame-reveal--update-header))))
 

@@ -53,19 +53,19 @@
 
 (define-fringe-bitmap 'blame-reveal-full
   [#b11111111 #b11111111 #b11111111 #b11111111
-   #b11111111 #b11111111 #b11111111 #b11111111
-   #b11111111 #b11111111 #b11111111 #b11111111
-   #b11111111 #b11111111 #b11111111 #b11111111]
+              #b11111111 #b11111111 #b11111111 #b11111111
+              #b11111111 #b11111111 #b11111111 #b11111111
+              #b11111111 #b11111111 #b11111111 #b11111111]
   16 8 'center)
 
 (define-fringe-bitmap 'blame-reveal-loading-bright
   [#b11111111 #b11111111 #b11111111 #b01111110
-   #b01111110 #b00111100 #b00011000 #b00000000]
+              #b01111110 #b00111100 #b00011000 #b00000000]
   8 8 'center)
 
 (define-fringe-bitmap 'blame-reveal-loading-dim
   [#b11111111 #b11111111 #b11111111 #b01111110
-   #b01111110 #b00111100 #b00011000 #b00000000]
+              #b01111110 #b00111100 #b00011000 #b00000000]
   8 8 'center)
 
 ;;; Keymaps
@@ -632,7 +632,9 @@ For small files, sync loading is actually faster due to less overhead."
             (setq blame-reveal--current-revision nil)
             (setq blame-reveal--revision-display nil)
 
-            (blame-reveal--setup-theme-advice))))
+            (blame-reveal--setup-theme-advice)
+
+            (run-hooks 'blame-reveal-mode-on-hook))))
 
     ;; Cleanup when disabling mode
     (setq emulation-mode-map-alists
@@ -692,7 +694,9 @@ For small files, sync loading is actually faster due to less overhead."
       (setq blame-reveal--current-revision nil)
       (setq blame-reveal--revision-display nil)
 
-      (blame-reveal--remove-theme-advice))))
+      (blame-reveal--remove-theme-advice)
+
+      (run-hooks 'blame-reveal-mode-off-hook))))
 
 ;;; Global Mode
 
