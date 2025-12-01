@@ -200,46 +200,99 @@ Preserves :type field."
     ;; ;; 装饰/边框色 (8个) - 各种鲜艳色
     ;; "#FF80AB" "#FFD740" "#76FF03" "#18FFFF" "#651FFF" "#FF6E40" "#00E676" "#FF4081"
     
-    ;; 256个专门为深色背景优化的高对比度颜色(竖排组织，确保随机性)
-    ;; 第1-8列：基础色系混合
-    "#FF5252" "#69F0AE" "#448AFF" "#FFD600" "#00E5FF" "#E040FB" "#FFFFFF" "#FF80AB"
-    "#FF6B6B" "#00E676" "#2979FF" "#FFC400" "#00B8D4" "#D500F9" "#F5F5F5" "#FFD740"
-    "#FF8A80" "#00C853" "#2962FF" "#FFAB00" "#00BFA5" "#AA00FF" "#EEEEEE" "#76FF03"
-    "#FFABAB" "#64DD17" "#304FFE" "#FF8F00" "#00BCD4" "#7C4DFF" "#E0E0E0" "#18FFFF"
-    "#F44336" "#4CAF50" "#2196F3" "#FFEB3B" "#00ACC1" "#9C27B0" "#BDBDBD" "#651FFF"
-    "#E53935" "#43A047" "#1E88E5" "#FDD835" "#0097A7" "#8E24AA" "#9E9E9E" "#FF6E40"
-    "#D32F2F" "#388E3C" "#1976D2" "#FBC02D" "#00838F" "#7B1FA2" "#757575" "#00E676"
-    "#C62828" "#2E7D32" "#1565C0" "#F9A825" "#006064" "#6A1B9A" "#616161" "#FF4081"
+    ;; ;; 256个专门为深色背景优化的高对比度颜色(竖排组织，确保随机性)
+    ;; ;; 第1-8列：基础色系混合
+    ;; "#FF5252" "#69F0AE" "#448AFF" "#FFD600" "#00E5FF" "#E040FB" "#FFFFFF" "#FF80AB"
+    ;; "#FF6B6B" "#00E676" "#2979FF" "#FFC400" "#00B8D4" "#D500F9" "#F5F5F5" "#FFD740"
+    ;; "#FF8A80" "#00C853" "#2962FF" "#FFAB00" "#00BFA5" "#AA00FF" "#EEEEEE" "#76FF03"
+    ;; "#FFABAB" "#64DD17" "#304FFE" "#FF8F00" "#00BCD4" "#7C4DFF" "#E0E0E0" "#18FFFF"
+    ;; "#F44336" "#4CAF50" "#2196F3" "#FFEB3B" "#00ACC1" "#9C27B0" "#BDBDBD" "#651FFF"
+    ;; "#E53935" "#43A047" "#1E88E5" "#FDD835" "#0097A7" "#8E24AA" "#9E9E9E" "#FF6E40"
+    ;; "#D32F2F" "#388E3C" "#1976D2" "#FBC02D" "#00838F" "#7B1FA2" "#757575" "#00E676"
+    ;; "#C62828" "#2E7D32" "#1565C0" "#F9A825" "#006064" "#6A1B9A" "#616161" "#FF4081"
 
-    ;; 第9-16列：扩展色系混合
-    "#FF1744" "#1DE9B6" "#536DFE" "#FFCA28" "#00B0FF" "#EA80FC" "#FAFAFA" "#FF8A80"
-    "#D50000" "#00BFA5" "#3D5AFE" "#FFB300" "#0091EA" "#CE93D8" "#F0F0F0" "#FFD180"
-    "#FF4081" "#64FFDA" "#304FFE" "#FFA000" "#00E5FF" "#BA68C8" "#D6D6D6" "#FFAB40"
-    "#F50057" "#00E676" "#1A237E" "#FF6D00" "#40C4FF" "#AB47BC" "#C0C0C0" "#FF9E80"
-    "#C51162" "#00C853" "#283593" "#FF5722" "#80D8FF" "#9C27B0" "#A0A0A0" "#FF7043"
-    "#F48FB1" "#76FF03" "#3949AB" "#E65100" "#84FFFF" "#8E24AA" "#808080" "#FF8A65"
-    "#EC407A" "#B2FF59" "#303F9F" "#BF360C" "#18FFFF" "#7B1FA2" "#606060" "#FF6D42"
-    "#E91E63" "#CCFF90" "#1A237E" "#FF3D00" "#00B8D4" "#6A1B9A" "#404040" "#FF5252"
+    ;; ;; 第9-16列：扩展色系混合
+    ;; "#FF1744" "#1DE9B6" "#536DFE" "#FFCA28" "#00B0FF" "#EA80FC" "#FAFAFA" "#FF8A80"
+    ;; "#D50000" "#00BFA5" "#3D5AFE" "#FFB300" "#0091EA" "#CE93D8" "#F0F0F0" "#FFD180"
+    ;; "#FF4081" "#64FFDA" "#304FFE" "#FFA000" "#00E5FF" "#BA68C8" "#D6D6D6" "#FFAB40"
+    ;; "#F50057" "#00E676" "#1A237E" "#FF6D00" "#40C4FF" "#AB47BC" "#C0C0C0" "#FF9E80"
+    ;; "#C51162" "#00C853" "#283593" "#FF5722" "#80D8FF" "#9C27B0" "#A0A0A0" "#FF7043"
+    ;; "#F48FB1" "#76FF03" "#3949AB" "#E65100" "#84FFFF" "#8E24AA" "#808080" "#FF8A65"
+    ;; "#EC407A" "#B2FF59" "#303F9F" "#BF360C" "#18FFFF" "#7B1FA2" "#606060" "#FF6D42"
+    ;; "#E91E63" "#CCFF90" "#1A237E" "#FF3D00" "#00B8D4" "#6A1B9A" "#404040" "#FF5252"
 
-    ;; 第17-24列：补充鲜艳色系
-    "#FF8A80" "#84FFFF" "#8C9EFF" "#FFFF00" "#80DEEA" "#F8BBD0" "#F0F4F8" "#FF77A9"
-    "#FFCDD2" "#18FFFF" "#536DFE" "#FFEA00" "#4DD0E1" "#F48FB1" "#E3F2FD" "#FF5C8D"
-    "#EF9A9A" "#00E5FF" "#3D5AFE" "#FFD600" "#26C6DA" "#EC407A" "#BBDEFB" "#FF477E"
-    "#E57373" "#00B8D4" "#304FFE" "#FFC400" "#00ACC1" "#E91E63" "#90CAF9" "#FF2E6D"
-    "#EF5350" "#0097A7" "#1A237E" "#FFAB00" "#00838F" "#D81B60" "#64B5F6" "#FF1A5C"
-    "#E53935" "#006064" "#0D47A1" "#FF8F00" "#006064" "#C2185B" "#42A5F5" "#FF0A4B"
-    "#D32F2F" "#004D40" "#1565C0" "#FF6D00" "#004D40" "#AD1457" "#2196F3" "#FF0038"
-    "#C62828" "#00251A" "#0D47A1" "#FF3D00" "#00251A" "#880E4F" "#1976D2" "#FF0022"
+    ;; ;; 第17-24列：补充鲜艳色系
+    ;; "#FF8A80" "#84FFFF" "#8C9EFF" "#FFFF00" "#80DEEA" "#F8BBD0" "#F0F4F8" "#FF77A9"
+    ;; "#FFCDD2" "#18FFFF" "#536DFE" "#FFEA00" "#4DD0E1" "#F48FB1" "#E3F2FD" "#FF5C8D"
+    ;; "#EF9A9A" "#00E5FF" "#3D5AFE" "#FFD600" "#26C6DA" "#EC407A" "#BBDEFB" "#FF477E"
+    ;; "#E57373" "#00B8D4" "#304FFE" "#FFC400" "#00ACC1" "#E91E63" "#90CAF9" "#FF2E6D"
+    ;; "#EF5350" "#0097A7" "#1A237E" "#FFAB00" "#00838F" "#D81B60" "#64B5F6" "#FF1A5C"
+    ;; "#E53935" "#006064" "#0D47A1" "#FF8F00" "#006064" "#C2185B" "#42A5F5" "#FF0A4B"
+    ;; "#D32F2F" "#004D40" "#1565C0" "#FF6D00" "#004D40" "#AD1457" "#2196F3" "#FF0038"
+    ;; "#C62828" "#00251A" "#0D47A1" "#FF3D00" "#00251A" "#880E4F" "#1976D2" "#FF0022"
 
-    ;; 第25-32列：专业和特殊用途色系
-    "#FF5252" "#00E676" "#2979FF" "#FFD600" "#00E5FF" "#E040FB" "#ECEFF1" "#FF80AB"
-    "#FF8676" "#00C853" "#2962FF" "#FFC107" "#00B0FF" "#D500F9" "#CFD8DC" "#FF8F8F"
-    "#FF7961" "#64DD17" "#304FFE" "#FFB300" "#0091EA" "#AA00FF" "#B0BEC5" "#FF9F9F"
-    "#FF8A65" "#AEEA00" "#3F51B5" "#FF9800" "#01579B" "#7C4DFF" "#90A4AE" "#FFAFAF"
-    "#FF7043" "#C6FF00" "#303F9F" "#FF6D00" "#006064" "#651FFF" "#78909C" "#FFBFBF"
-    "#FF5722" "#CCFF00" "#283593" "#FF3D00" "#004D40" "#6200EA" "#607D8B" "#FFCFCF"
-    "#E65100" "#B2FF00" "#1A237E" "#DD2C00" "#002F6C" "#4A148C" "#546E7A" "#FFDFDF"
-    "#BF360C" "#99FF00" "#0D47A1" "#BF360C" "#001F3F" "#311B92" "#37474F" "#FFEFEF"
+    ;; ;; 第25-32列：专业和特殊用途色系
+    ;; "#FF5252" "#00E676" "#2979FF" "#FFD600" "#00E5FF" "#E040FB" "#ECEFF1" "#FF80AB"
+    ;; "#FF8676" "#00C853" "#2962FF" "#FFC107" "#00B0FF" "#D500F9" "#CFD8DC" "#FF8F8F"
+    ;; "#FF7961" "#64DD17" "#304FFE" "#FFB300" "#0091EA" "#AA00FF" "#B0BEC5" "#FF9F9F"
+    ;; "#FF8A65" "#AEEA00" "#3F51B5" "#FF9800" "#01579B" "#7C4DFF" "#90A4AE" "#FFAFAF"
+    ;; "#FF7043" "#C6FF00" "#303F9F" "#FF6D00" "#006064" "#651FFF" "#78909C" "#FFBFBF"
+    ;; "#FF5722" "#CCFF00" "#283593" "#FF3D00" "#004D40" "#6200EA" "#607D8B" "#FFCFCF"
+    ;; "#E65100" "#B2FF00" "#1A237E" "#DD2C00" "#002F6C" "#4A148C" "#546E7A" "#FFDFDF"
+    ;; "#BF360C" "#99FF00" "#0D47A1" "#BF360C" "#001F3F" "#311B92" "#37474F" "#FFEFEF"
+
+    "#51CF66"  ;; Bright Green
+    "#5A189A"  ;; Deep Purple
+    "#00B7FF"  ;; Electric Blue
+    "#FF0080"  ;; Hot Pink
+    "#7CFC00"  ;; Lime Green
+    "#008B8B"  ;; Dark Cyan
+    "#FF4500"  ;; Orange Red
+    "#FF1493"  ;; Deep Pink
+    "#90EE90"  ;; Light Green
+    "#40E0D0"  ;; Turquoise
+    "#0066CC"  ;; Vivid Blue
+    "#FFFF00"  ;; Bright Yellow
+    "#9400D3"  ;; Dark Violet
+    "#00FF7F"  ;; Spring Green
+    "#4169E1"  ;; Royal Blue
+    "#DC143C"  ;; Crimson
+    "#00BFFF"  ;; Deep Sky Blue
+    "#7CFC00"  ;; Lawn Green
+    "#9370DB"  ;; Medium Purple
+    "#FF8C00"  ;; Dark Orange
+    "#4682B4"  ;; Steel Blue
+    "#98FB98"  ;; Pale Green
+    "#00CED1"  ;; Dark Turquoise
+    "#B22222"  ;; Firebrick
+    "#0000CD"  ;; Medium Blue
+    "#8B008B"  ;; Dark Magenta
+    "#6B8E23"  ;; Olive Drab
+    "#8FBC8F"  ;; Dark Sea Green
+    "#6A5ACD"  ;; Slate Blue
+    "#BA55D3"  ;; Medium Orchid
+    "#B8860B"  ;; Dark Goldenrod
+    "#00FA9A"  ;; Medium Spring Green
+    "#5F9EA0"  ;; Cadet Blue
+    "#483D8B"  ;; Dark Slate Blue
+    "#3CB371"  ;; Medium Sea Green
+    "#20B2AA"  ;; Light Sea Green
+    "#87CEFA"  ;; Light Sky Blue
+    "#B0C4DE"  ;; Light Steel Blue
+    "#E0FFFF"  ;; Light Cyan
+    "#FAFAD2"  ;; Light Goldenrod Yellow
+    "#D3D3D3"  ;; Light Gray
+    "#FFB6C1"  ;; Light Pink
+    "#FFA07A"  ;; Light Salmon
+    "#F08080"  ;; Light Coral
+    "#ADD8E6"  ;; Light Blue
+    "#90EE90"  ;; Light Green
+
+    ;; "#B0C4DE" "#FF00FF" "#1E90FF" "#FA8072" "#EEE8AA" "#FF1493" "#7B68EE"
+    ;; "#FFC0CB" "#696969" "#556B2F" "#CD853F" "#000080" "#32CD32" "#7F007F"
+    ;; "#B03060" "#800000" "#483D8B" "#008000" "#3CB371" "#008B8B" "#FF0000"
+    ;; "#FF8C00" "#FFD700" "#00FF00" "#9400D3" "#00FA9A" "#DC143C" "#00FFFF"
+    ;; "#00BFFF" "#0000FF" "#ADFF2F" "#DA70D6"
     )
   "预定义的dark theme的高对比度颜色列表")
 
