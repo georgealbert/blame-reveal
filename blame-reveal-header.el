@@ -351,7 +351,7 @@ For inline and margin styles, ensures the result is single-line."
     (unless (eobp)
       (let* ((bol (line-beginning-position))
              (eol (line-end-position))
-             (ov (make-overlay bol eol))
+             (ov (make-overlay bol (1+ bol)))
              (margin-text (car (blame-reveal-commit-display-lines display)))
              (margin-face (car (blame-reveal-commit-display-faces display)))
              (side (or (blame-reveal--get-current-margin-side) 'left)))
