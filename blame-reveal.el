@@ -442,6 +442,57 @@ Tip: Use this package with diff-hl-mode for the best experience:
 
 ;;; Color Customization
 
+(defconst blame-reveal--high-contrast-colors
+  '(
+    "#51CF66"  ;; Bright Green
+    "#5A189A"  ;; Deep Purple
+    "#00B7FF"  ;; Electric Blue
+    "#FF0080"  ;; Hot Pink
+    "#7CFC00"  ;; Lime Green
+    "#008B8B"  ;; Dark Cyan
+    "#FF4500"  ;; Orange Red
+    "#FF1493"  ;; Deep Pink
+    "#90EE90"  ;; Light Green
+    "#40E0D0"  ;; Turquoise
+    "#0066CC"  ;; Vivid Blue
+    "#FFFF00"  ;; Bright Yellow
+    "#9400D3"  ;; Dark Violet
+    "#00FF7F"  ;; Spring Green
+    "#4169E1"  ;; Royal Blue
+    "#DC143C"  ;; Crimson
+    "#00BFFF"  ;; Deep Sky Blue
+    "#7CFC00"  ;; Lawn Green
+    "#9370DB"  ;; Medium Purple
+    "#FF8C00"  ;; Dark Orange
+    "#4682B4"  ;; Steel Blue
+    "#98FB98"  ;; Pale Green
+    "#00CED1"  ;; Dark Turquoise
+    "#B22222"  ;; Firebrick
+    "#0000CD"  ;; Medium Blue
+    "#8B008B"  ;; Dark Magenta
+    "#6B8E23"  ;; Olive Drab
+    "#8FBC8F"  ;; Dark Sea Green
+    "#6A5ACD"  ;; Slate Blue
+    "#BA55D3"  ;; Medium Orchid
+    "#B8860B"  ;; Dark Goldenrod
+    "#00FA9A"  ;; Medium Spring Green
+    "#5F9EA0"  ;; Cadet Blue
+    "#483D8B"  ;; Dark Slate Blue
+    "#3CB371"  ;; Medium Sea Green
+    "#20B2AA"  ;; Light Sea Green
+    "#87CEFA"  ;; Light Sky Blue
+    "#B0C4DE"  ;; Light Steel Blue
+    "#E0FFFF"  ;; Light Cyan
+    "#FAFAD2"  ;; Light Goldenrod Yellow
+    "#D3D3D3"  ;; Light Gray
+    "#FFB6C1"  ;; Light Pink
+    "#FFA07A"  ;; Light Salmon
+    "#F08080"  ;; Light Coral
+    "#ADD8E6"  ;; Light Blue
+    "#90EE90"  ;; Light Green
+    )
+  "预定义的dark theme的高对比度颜色列表")
+
 (defcustom blame-reveal-recent-commit-color nil
   "Color for recent commits (within top N and time limit).
 If nil, uses automatic gradient based on commit rank.

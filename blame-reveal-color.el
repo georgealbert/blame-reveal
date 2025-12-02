@@ -125,6 +125,10 @@
 
 ;;; Color Access Functions
 
+(defun blame-reveal--random-from-contrast-pool ()
+  "从高对比度颜色池中随机选择"
+  (nth (random (length blame-reveal--high-contrast-colors)) blame-reveal--high-contrast-colors))
+
 (defun blame-reveal--get-commit-color (commit-hash)
   (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
   (if (blame-reveal--is-uncommitted-p commit-hash)
@@ -139,7 +143,8 @@
                               :min-timestamp (car blame-reveal--timestamps)
                               :max-timestamp (cdr blame-reveal--timestamps)))
                (color (if rank
-                          (blame-reveal-color-calculate blame-reveal--color-strategy commit-hash context)
+                          ;; (blame-reveal-color-calculate blame-reveal--color-strategy commit-hash context)
+                          (blame-reveal--random-from-contrast-pool)
                         (blame-reveal--get-old-commit-color))))
           (when color (puthash commit-hash color blame-reveal--color-map))
           (or color (if (blame-reveal-color--is-dark-theme-p) "#6699cc" "#7799bb"))))))
