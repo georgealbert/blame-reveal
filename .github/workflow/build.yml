@@ -1,0 +1,41 @@
+name: test git log
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 1,16 * *'
+      timezone: 'Asia/Shanghai'
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - name: Install Emacs
+        run: |
+          git clone -b 'v3' https://github.com/georgealbert/blame-reveal.git
+
+      - name: Generate release note commit info
+        run: |
+          cd blame-reveal
+          echo "GIT_LOGS<<EOF" >> $GITHUB_ENV
+          git log -10 --oneline --format:"%h %an(%ad): %s" --date=iso >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
+      - name: Publish Release
+        id: publish_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "20251203"
+          draft: false
+          prerelease: false
+          body: >
+            Static build branch master of macOS Intel X86 Emacs app.
+
+
+            ```
+            ${{ env.latest_log }}
+            ```
+
+
+            Built with:
+            [Github Workflow #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
