@@ -39,7 +39,12 @@ Returns t if started successfully."
         (progn
           (when (not (eq blame-reveal--state-status 'idle))
             (blame-reveal--state-cancel reason))
-          ;; Generate new process ID for this operation
+          ;; 重要：在生成新 ID 之前，确保旧进程已经清理
+          (when blame-reveal--state-process
+            (when (process-live-p blame-reveal--state-process)
+              (delete-process blame-reveal--state-process))
+            (setq blame-reveal--state-process nil))
+          ;; 生成新的进程 ID
           (setq blame-reveal--process-id (blame-reveal--generate-process-id))
           (setq blame-reveal--state-status 'loading
                 blame-reveal--state-operation operation
@@ -56,19 +61,27 @@ Returns t if started successfully."
 
 (defun blame-reveal--state-set-async-resources (process buffer)
   "Set async PROCESS and BUFFER for current operation."
-  ;; Store process ID in process for verification
-  (when blame-reveal--process-id
-    (process-put process 'blame-reveal-process-id blame-reveal--process-id))
+  ;; 确保有进程 ID
+  (unless blame-reveal--process-id
+    (setq blame-reveal--process-id (blame-reveal--generate-process-id)))
+  ;; 存储进程 ID 到进程对象
+  (when (and process (processp process))
+    (process-put process 'blame-reveal-process-id blame-reveal--process-id)
+    (process-put process 'source-file (buffer-file-name)))
   (setq blame-reveal--state-process process
         blame-reveal--state-buffer buffer))
 
 (defun blame-reveal--state-verify-process (process)
-  "Verify PROCESS belongs to current operation.
-Returns t if valid, nil otherwise."
-  (let ((proc-id (process-get process 'blame-reveal-process-id)))
-    (and proc-id
-         blame-reveal--process-id
-         (equal proc-id blame-reveal--process-id))))
+  "Verify PROCESS belongs to current operation."
+  (and (processp process)
+       ;; 关键：如果进程已经不在 state-process 中，说明已被替换
+       (eq process blame-reveal--state-process)
+       (let ((proc-id (process-get process 'blame-reveal-process-id))
+             (proc-file (process-get process 'source-file)))
+         (and proc-id
+              blame-reveal--process-id
+              (equal proc-id blame-reveal--process-id)
+              (equal proc-file (buffer-file-name))))))
 
 (defun blame-reveal--state-transition (new-status)
   "Transition to NEW-STATUS."
@@ -105,25 +118,51 @@ Ensures cleanup happens even if rendering fails."
 
 (defun blame-reveal--state-error (error-msg)
   "Handle error with ERROR-MSG.
-Ensures all resources are cleaned up even if cleanup fails."
+Ensures all resources are cleaned up even if cleanup fails.
+Uses defensive programming to prevent cascading failures."
   (message "[State] Error: %s" error-msg)
-  (unwind-protect
-      (progn
-        (blame-reveal--stop-loading-animation)
-        (blame-reveal--state-cleanup-async))
-    ;; Ensure resources are cleaned even if above fails
-    (ignore-errors
-      (when blame-reveal--header-overlay
-        (delete-overlay blame-reveal--header-overlay)
-        (setq blame-reveal--header-overlay nil))
-      (blame-reveal--clear-sticky-header)
-      (when blame-reveal--temp-overlay-timer
-        (cancel-timer blame-reveal--temp-overlay-timer)
-        (setq blame-reveal--temp-overlay-timer nil))))
+
+  ;; 第一层：清理异步资源
+  (ignore-errors
+    (blame-reveal--stop-loading-animation))
+  (ignore-errors
+    (blame-reveal--state-cleanup-async))
+
+  ;; 第二层：清理 UI 元素
+  (ignore-errors
+    (when (and (boundp 'blame-reveal--header-overlay)
+               blame-reveal--header-overlay
+               (overlayp blame-reveal--header-overlay))
+      (delete-overlay blame-reveal--header-overlay)
+      (setq blame-reveal--header-overlay nil)))
+
+  (ignore-errors
+    (when (fboundp 'blame-reveal--clear-sticky-header)
+      (blame-reveal--clear-sticky-header)))
+
+  ;; 第三层：清理定时器
+  (ignore-errors
+    (when (and (boundp 'blame-reveal--temp-overlay-timer)
+               blame-reveal--temp-overlay-timer
+               (timerp blame-reveal--temp-overlay-timer))
+      (cancel-timer blame-reveal--temp-overlay-timer)
+      (setq blame-reveal--temp-overlay-timer nil)))
+
+  (ignore-errors
+    (when (and (boundp 'blame-reveal--header-update-timer)
+               blame-reveal--header-update-timer
+               (timerp blame-reveal--header-update-timer))
+      (cancel-timer blame-reveal--header-update-timer)
+      (setq blame-reveal--header-update-timer nil)))
+
+  ;; 设置错误状态
   (setq blame-reveal--state-status 'error)
+
+  ;; 延迟重置状态（给用户时间看到错误）
   (run-with-timer 0.1 nil
                   (lambda ()
-                    (when (eq blame-reveal--state-status 'error)
+                    (when (and (boundp 'blame-reveal--state-status)
+                               (eq blame-reveal--state-status 'error))
                       (setq blame-reveal--state-status 'idle
                             blame-reveal--state-operation nil
                             blame-reveal--state-mode nil

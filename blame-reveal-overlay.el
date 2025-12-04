@@ -41,25 +41,26 @@ Returns the overlay."
     overlay))
 
 (defun blame-reveal--unregister-overlay (overlay)
-  "Unregister OVERLAY from all indices."
-  (when-let ((metadata (gethash overlay blame-reveal--overlay-registry)))
-    (let ((type (plist-get metadata :type))
-          (commit (plist-get metadata :commit))
-          (line (plist-get metadata :line)))
-      (when type
-        (puthash type
-                 (delq overlay (gethash type blame-reveal--overlays-by-type))
-                 blame-reveal--overlays-by-type))
-      (when commit
-        (puthash commit
-                 (delq overlay (gethash commit blame-reveal--overlays-by-commit))
-                 blame-reveal--overlays-by-commit))
-      (when line
-        (puthash line
-                 (delq overlay (gethash line blame-reveal--overlays-by-line))
-                 blame-reveal--overlays-by-line))
-      (remhash overlay blame-reveal--overlay-registry)))
-  (ignore-errors (delete-overlay overlay)))
+  "Unregister OVERLAY from all indices and delete it.
+Safe to call even if overlay is already deleted or invalid."
+  (when (and overlay (overlayp overlay))
+    (when-let ((metadata (gethash overlay blame-reveal--overlay-registry)))
+      (let ((type (plist-get metadata :type))
+            (commit (plist-get metadata :commit))
+            (line (plist-get metadata :line)))
+        (when type
+          (let ((type-list (gethash type blame-reveal--overlays-by-type)))
+            (puthash type (delq overlay type-list) blame-reveal--overlays-by-type)))
+        (when commit
+          (let ((commit-list (gethash commit blame-reveal--overlays-by-commit)))
+            (puthash commit (delq overlay commit-list) blame-reveal--overlays-by-commit)))
+        (when line
+          (let ((line-list (gethash line blame-reveal--overlays-by-line)))
+            (puthash line (delq overlay line-list) blame-reveal--overlays-by-line)))
+        (remhash overlay blame-reveal--overlay-registry)))
+    (ignore-errors
+      (when (overlay-buffer overlay)
+        (delete-overlay overlay)))))
 
 ;;; Query Functions
 
@@ -136,7 +137,7 @@ Preserves :type field."
            (new-line (plist-get metadata :line))
            (new-metadata (plist-put (copy-sequence metadata) :type type)))
       (when (and old-commit (not (equal old-commit new-commit)))
-        (puthash old-commit 
+        (puthash old-commit
                  (delq overlay (gethash old-commit blame-reveal--overlays-by-commit))
                  blame-reveal--overlays-by-commit)
         (when new-commit
@@ -174,7 +175,7 @@ Preserves :type field."
       (let* ((pos (line-beginning-position))
              (fringe-face (blame-reveal--ensure-fringe-face color))
              (overlay (or (blame-reveal--find-reusable-overlay 'fringe line-number)
-                          (blame-reveal--create-managed-overlay 
+                          (blame-reveal--create-managed-overlay
                            pos pos 'fringe
                            (list :commit commit-hash :line line-number)))))
         (overlay-put overlay 'before-string
@@ -183,8 +184,8 @@ Preserves :type field."
                                        'blame-reveal-full
                                        fringe-face)))
         (when (overlay-buffer overlay)
-          (blame-reveal--update-overlay-metadata 
-           overlay 
+          (blame-reveal--update-overlay-metadata
+           overlay
            (list :commit commit-hash :line line-number)))
         overlay))))
 
@@ -231,7 +232,7 @@ Returns list of created/reused overlays."
     (unless (eobp)
       (let* ((pos (line-beginning-position))
              (fringe-face (blame-reveal--ensure-fringe-face color))
-             (overlay (blame-reveal--create-managed-overlay 
+             (overlay (blame-reveal--create-managed-overlay
                        pos pos 'temp-fringe
                        (list :commit commit-hash :line line-number))))
         (overlay-put overlay 'before-string

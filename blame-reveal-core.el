@@ -78,6 +78,15 @@
 (defvar-local blame-reveal--original-right-margin-width nil
   "Original right-margin-width before margin style was enabled.")
 
+(defvar-local blame-reveal--detect-moves nil
+  "Whether current view is detecting moved/copied lines.
+When non-nil, uses git blame -M -C.
+Set by interactive command, not a persistent option.")
+
+(defvar-local blame-reveal--move-copy-metadata nil
+  "Hash table storing move/copy metadata for commits.
+Maps commit-hash to plist with :previous-commit and :previous-file.")
+
 ;;; Process Tracking (for concurrency safety)
 
 (defvar-local blame-reveal--process-id nil
@@ -181,16 +190,30 @@ Hash table: line -> list of overlays")
   "Check if COMMIT-HASH represents uncommitted changes."
   (string-match-p "^0+$" commit-hash))
 
+(defun blame-reveal--safe-line-number-at-pos (&optional pos)
+  "Safely get line number at POS.
+Returns nil if POS is invalid or out of range."
+  (when (or (null pos)
+            (and (>= pos (point-min))
+                 (<= pos (point-max))))
+    (line-number-at-pos pos)))
+
 (defun blame-reveal--get-visible-line-range ()
   "Get the range of visible lines with margin.
-Returns (START-LINE . END-LINE)."
-  (let* ((window-start (window-start))
-         (window-end (window-end nil t))
-         (start-line (max 1 (- (line-number-at-pos window-start)
-                               blame-reveal-render-margin)))
-         (end-line (+ (line-number-at-pos window-end)
-                      blame-reveal-render-margin)))
-    (cons start-line end-line)))
+Returns (START-LINE . END-LINE) or nil if unable to determine."
+  (condition-case err
+      (let* ((window-start (window-start))
+             (window-end (window-end nil t))
+             (max-line (blame-reveal--safe-line-number-at-pos (point-max)))
+             (start-pos-line (blame-reveal--safe-line-number-at-pos window-start))
+             (end-pos-line (blame-reveal--safe-line-number-at-pos window-end)))
+        (when (and max-line start-pos-line end-pos-line)
+          (let ((start-line (max 1 (- start-pos-line blame-reveal-render-margin)))
+                (end-line (min max-line (+ end-pos-line blame-reveal-render-margin))))
+            (cons start-line end-line))))
+    (error
+     (message "Error getting visible line range: %s" (error-message-string err))
+     nil)))
 
 (defun blame-reveal--find-block-boundaries (blame-data &optional start-line end-line)
   "Find boundaries of same-commit blocks in BLAME-DATA.

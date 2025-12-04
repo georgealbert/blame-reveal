@@ -17,6 +17,8 @@
 START-LINE and END-LINE specify optional line range.
 RELATIVE-FILE is the file path relative to git root."
   (let ((args (list "blame" "--porcelain")))
+    (when blame-reveal--detect-moves
+      (setq args (append args '("-M" "-C"))))
     (when (and start-line end-line)
       (setq args (append args (list "-L" (format "%d,%d" start-line end-line)))))
     (when (and (boundp 'blame-reveal--current-revision)
@@ -27,31 +29,62 @@ RELATIVE-FILE is the file path relative to git root."
 
 ;;; Blame Data Parsing
 
-(defun blame-reveal--parse-blame-output (output-buffer)
+(defun blame-reveal--parse-blame-output (output-buffer current-file)
   "Parse git blame porcelain output from OUTPUT-BUFFER.
-Returns list of (LINE-NUMBER . COMMIT-HASH)."
+CURRENT-FILE is the file being blamed (relative to git root).
+Returns (BLAME-DATA . MOVE-METADATA) where:
+- BLAME-DATA is list of (LINE-NUMBER . COMMIT-HASH)
+- MOVE-METADATA is hash table of commit -> previous info"
   (let ((blame-data nil)
-        (current-commit nil))
+        (current-commit nil)
+        (current-line-filename nil)
+        (move-metadata (make-hash-table :test 'equal)))
     (with-current-buffer output-buffer
       (goto-char (point-min))
       (while (not (eobp))
         (cond
          ((looking-at "^\\([a-f0-9]\\{40\\}\\) \\([0-9]+\\) \\([0-9]+\\)")
           (setq current-commit (match-string 1))
+          (setq current-line-filename nil)
           (let ((line-number (string-to-number (match-string 3))))
             (push (cons line-number current-commit) blame-data))
           (forward-line 1))
+
+         ;; 捕获 filename（这一行最初所在的文件）
+         ((looking-at "^filename \\(.+\\)$")
+          (setq current-line-filename (match-string 1))
+          ;; 如果 filename 与当前文件不同，记录为可能的 move
+          (when (and current-commit
+                     current-file
+                     (not (string= current-line-filename current-file)))
+            (puthash current-commit
+                     (list :previous-file current-line-filename
+                           :previous-commit current-commit)
+                     move-metadata))
+          (forward-line 1))
+
+         ;; previous 字段优先级更高（真正的跨文件复制）
+         ((looking-at "^previous \\([a-f0-9]+\\) \\(.+\\)$")
+          (when current-commit
+            (puthash current-commit
+                     (list :previous-commit (match-string 1)
+                           :previous-file (match-string 2))
+                     move-metadata))
+          (forward-line 1))
+
          ((looking-at "^\t")
           (forward-line 1))
          (t
           (forward-line 1)))))
-    (nreverse blame-data)))
+    (cons (nreverse blame-data) move-metadata)))
 
 ;;; Synchronous Loading
 
 (defun blame-reveal--get-blame-data ()
   "Get git blame data for current buffer (entire file) synchronously.
-Returns list of (LINE-NUMBER . COMMIT-HASH)."
+Returns (BLAME-DATA . MOVE-METADATA) where:
+- BLAME-DATA is list of (LINE-NUMBER . COMMIT-HASH)
+- MOVE-METADATA is hash table of commit -> previous info"
   (let* ((file (buffer-file-name))
          (git-root (and file (vc-git-root file))))
     (if (not (and file git-root (vc-git-registered file)))
@@ -63,12 +96,23 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                                              process-environment))))
         (with-temp-buffer
           (if (zerop (call-process "git" nil t nil "blame" "--porcelain" relative-file))
-              (blame-reveal--parse-blame-output (current-buffer))
+              (let ((result (blame-reveal--parse-blame-output
+                             (current-buffer)
+                             relative-file)))  ; 传入 relative-file
+                ;; 保存 metadata 到 buffer-local 变量
+                (when (and (cdr result)
+                           (hash-table-p (cdr result))
+                           (> (hash-table-count (cdr result)) 0))
+                  (setq blame-reveal--move-copy-metadata (cdr result)))
+                ;; 返回完整 result
+                result)
             nil))))))
 
 (defun blame-reveal--get-blame-data-range (start-line end-line)
   "Get git blame data for specific line range START-LINE to END-LINE synchronously.
-Returns list of (LINE-NUMBER . COMMIT-HASH)."
+Returns (BLAME-DATA . MOVE-METADATA) where:
+- BLAME-DATA is list of (LINE-NUMBER . COMMIT-HASH)
+- MOVE-METADATA is hash table of commit -> previous info"
   (let* ((file (buffer-file-name))
          (git-root (and file (vc-git-root file))))
     (if (not (and file git-root (vc-git-registered file)))
@@ -83,7 +127,20 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                                    "--porcelain"
                                    "-L" (format "%d,%d" start-line end-line)
                                    relative-file))
-              (blame-reveal--parse-blame-output (current-buffer))
+              (let ((result (blame-reveal--parse-blame-output
+                             (current-buffer)
+                             relative-file)))  ; 传入 relative-file
+                ;; 合并 metadata（如果已有的话）
+                (when (and (cdr result)
+                           (hash-table-p (cdr result))
+                           (> (hash-table-count (cdr result)) 0))
+                  (unless (hash-table-p blame-reveal--move-copy-metadata)
+                    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+                  (maphash (lambda (k v)
+                             (puthash k v blame-reveal--move-copy-metadata))
+                           (cdr result)))
+                ;; 返回完整 result
+                result)
             nil))))))
 
 (defun blame-reveal--load-blame-data-sync ()
@@ -98,18 +155,21 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
           (blame-reveal--state-error "Not in git repository")
           (cl-return-from blame-reveal--load-blame-data-sync nil))
         (let ((use-lazy (blame-reveal--should-lazy-load-p))
-              (blame-data nil))
+              (blame-data nil)
+              (result nil))
           (blame-reveal--state-transition 'loading)
           (if use-lazy
-              (let* ((range (blame-reveal--get-visible-line-range))
-                     (start-line (car range))
-                     (end-line (cdr range)))
-                (setq blame-data (blame-reveal--get-blame-data-range start-line end-line))
-                (when blame-data
-                  (setq blame-reveal--blame-data-range (cons start-line end-line))
-                  (message "Git blame loaded (sync, lazy): %d lines (range %d-%d)"
-                           (length blame-data) start-line end-line)))
-            (setq blame-data (blame-reveal--get-blame-data))
+              (when-let ((range (blame-reveal--get-visible-line-range)))
+                (let ((start-line (car range))
+                      (end-line (cdr range)))
+                  (setq result (blame-reveal--get-blame-data-range start-line end-line))
+                  (setq blame-data (car result))
+                  (when blame-data
+                    (setq blame-reveal--blame-data-range (cons start-line end-line))
+                    (message "Git blame loaded (sync, lazy): %d lines (range %d-%d)"
+                             (length blame-data) start-line end-line))))
+            (setq result (blame-reveal--get-blame-data))
+            (setq blame-data (car result))
             (when blame-data
               (setq blame-reveal--blame-data-range nil)
               (message "Git blame loaded (sync, full): %d lines" (length blame-data))))
@@ -139,12 +199,22 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                                            :end-line end-line))
     (cl-return-from blame-reveal--expand-blame-data-sync nil))
   (condition-case err
-      (let ((new-data (blame-reveal--get-blame-data-range start-line end-line)))
+      (let* ((result (blame-reveal--get-blame-data-range start-line end-line))
+             (new-data (car result))
+             (move-metadata (cdr result)))
         (if (null new-data)
             (progn
               (message "No new blame data in range %d-%d" start-line end-line)
               (blame-reveal--state-complete))
           (blame-reveal--state-transition 'processing)
+          ;; 合并 metadata
+          (when (and (hash-table-p move-metadata)
+                     (> (hash-table-count move-metadata) 0))
+            (unless (hash-table-p blame-reveal--move-copy-metadata)
+              (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+            (maphash (lambda (k v)
+                       (puthash k v blame-reveal--move-copy-metadata))
+                     move-metadata))
           (let ((existing-lines (make-hash-table :test 'equal))
                 (added-count 0))
             (dolist (entry blame-reveal--blame-data)
@@ -255,8 +325,12 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
          (start-line (when use-lazy (car range)))
          (end-line (when use-lazy (cdr range))))
     (if use-lazy
-        (message "Loading git blame (async, lazy): lines %d-%d..." start-line end-line)
-      (message "Loading git blame (async, full)..."))
+        (if blame-reveal--detect-moves
+            (message "Loading git blame with M/C detection: lines %d-%d..." start-line end-line)
+          (message "Loading git blame (async, lazy): lines %d-%d..." start-line end-line))
+      (if blame-reveal--detect-moves
+          (message "Loading git blame with M/C detection...")
+        (message "Loading git blame (async, full)...")))
     (blame-reveal--start-async-blame
      start-line
      end-line
@@ -276,7 +350,14 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
         (condition-case err
             (progn
               (blame-reveal--state-transition 'processing)
-              (let ((blame-data (blame-reveal--parse-blame-output temp-buffer)))
+              (let* ((file (buffer-file-name))
+                     (git-root (vc-git-root file))
+                     (relative-file (file-relative-name file git-root))
+                     (result (blame-reveal--parse-blame-output
+                              temp-buffer
+                              relative-file))  ; 传入 relative-file
+                     (blame-data (car result))
+                     (move-metadata (cdr result)))
                 (if blame-data
                     (progn
                       (setq blame-reveal--blame-data blame-data)
@@ -285,6 +366,12 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                       (setq blame-reveal--timestamps nil)
                       (setq blame-reveal--recent-commits nil)
                       (setq blame-reveal--all-commits-loaded nil)
+                      ;; 保存 metadata
+                      (when (hash-table-p move-metadata)
+                        (setq blame-reveal--move-copy-metadata move-metadata)
+                        (when (> (hash-table-count move-metadata) 0)
+                          (message "Detected %d moved/copied commits"
+                                   (hash-table-count move-metadata))))
                       (if use-lazy
                           (let* ((range (blame-reveal--get-visible-line-range))
                                  (start-line (car range))
@@ -294,6 +381,7 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                                      (length blame-data) start-line end-line))
                         (setq blame-reveal--blame-data-range nil)
                         (message "Git blame loaded (async, full): %d lines" (length blame-data)))
+                      (run-hook-with-args 'blame-reveal-after-load-hook (length blame-data))
                       (blame-reveal--state-transition 'rendering)
                       (blame-reveal--load-commits-incrementally)
                       (blame-reveal--render-visible-region)
@@ -330,7 +418,14 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
         (condition-case err
             (progn
               (blame-reveal--state-transition 'processing)
-              (let ((new-data (blame-reveal--parse-blame-output temp-buffer)))
+              (let* ((file (buffer-file-name))
+                     (git-root (vc-git-root file))
+                     (relative-file (file-relative-name file git-root))
+                     (result (blame-reveal--parse-blame-output
+                              temp-buffer
+                              relative-file))  ; 传入 relative-file
+                     (new-data (car result))
+                     (move-metadata (cdr result)))
                 (if (null new-data)
                     (progn
                       (message "No new blame data in range %d-%d" start-line end-line)
@@ -355,6 +450,13 @@ Returns list of (LINE-NUMBER . COMMIT-HASH)."
                                       (max end-line (cdr blame-reveal--blame-data-range))))
                         (setq blame-reveal--blame-data-range
                               (cons start-line end-line)))
+                      ;; 合并 metadata
+                      (when (> (hash-table-count move-metadata) 0)
+                        (unless blame-reveal--move-copy-metadata
+                          (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+                        (maphash (lambda (k v)
+                                   (puthash k v blame-reveal--move-copy-metadata))
+                                 move-metadata))
                       (maphash (lambda (commit _)
                                  (blame-reveal--ensure-commit-info commit))
                                new-commits)
@@ -514,10 +616,11 @@ Returns alist of (COMMIT-HASH . INFO)."
 
 (defun blame-reveal--should-use-async-p ()
   "Determine if async loading should be used based on configuration."
-  (pcase blame-reveal-async-blame
+  (or blame-reveal--detect-moves
+      (pcase blame-reveal-async-blame
     ('auto (blame-reveal--should-lazy-load-p))
     ('t t)
-    (_ nil)))
+    (_ nil))))
 
 (provide 'blame-reveal-git)
 ;;; blame-reveal-git.el ends here

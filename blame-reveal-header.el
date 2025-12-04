@@ -126,12 +126,17 @@ Saves original margin widths and applies calculated width to configured side."
   ;; Clear cached width
   (setq blame-reveal--margin-width nil))
 
-(defun blame-reveal--get-sticky-indicator (color)
-  "Get sticky header indicator with COLOR."
-  (if (and (fboundp 'nerd-icons-octicon)
-           (require 'nerd-icons nil t))
-      (concat (nerd-icons-octicon "nf-oct-fold_up" :face `(:foreground ,color)) " ")
-    (propertize " " 'face `(:foreground ,color))))
+(defun blame-reveal--icon (name &optional color fallback)
+  "Return an icon string for NAME.
+If COLOR is non-nil, apply foreground color.
+If `nerd-icons` is available, use `nerd-icons-octicon` with NAME.
+Otherwise use FALLBACK string or NAME itself."
+  (let ((fallback (or fallback name))
+        (face (when color `(:foreground ,color))))
+    (if (and (fboundp 'nerd-icons-octicon)
+             (require 'nerd-icons nil t))
+        (concat (nerd-icons-octicon name :face face) " ")
+      (propertize fallback 'face face))))
 
 (defun blame-reveal--abbreviate-author (author)
   "Abbreviate AUTHOR name."
@@ -142,8 +147,37 @@ Saves original margin widths and applies calculated width to configured side."
     (replace-match "\\1 \\2" nil nil author))
    (t author)))
 
+;; (defun blame-reveal--get-move-copy-meta (commit-hash)
+;;   "Return plist (:prev-file ... :prev-commit ...) for COMMIT-HASH, or nil."
+;;   (when (and blame-reveal--move-copy-metadata
+;;              (hash-table-p blame-reveal--move-copy-metadata))
+;;     (let ((meta (gethash commit-hash blame-reveal--move-copy-metadata)))
+;;       (when meta
+;;         (let ((prev-file (plist-get meta :previous-file))
+;;               (prev-commit (plist-get meta :previous-commit)))
+;;           (when (and prev-file prev-commit)
+;;             ;; 返回规范化后的 plist
+;;             (list :previous-file prev-file
+;;                   :previous-commit prev-commit)))))))
+(defun blame-reveal--get-move-copy-meta (commit-hash)
+  "Return plist (:previous-file ... :previous-commit ...)
+for COMMIT-HASH if moved/copied to a different file, else nil."
+  (when (and blame-reveal--move-copy-metadata
+             (hash-table-p blame-reveal--move-copy-metadata))
+    (let ((meta (gethash commit-hash blame-reveal--move-copy-metadata)))
+      (when meta
+        (let* ((prev-file (plist-get meta :previous-file))
+               (prev-commit (plist-get meta :previous-commit))
+               (current-file (file-relative-name (buffer-file-name)
+                                                (vc-git-root (buffer-file-name)))))
+          (when (and prev-file prev-commit
+                     (not (string= current-file prev-file)))
+            (list :previous-file prev-file
+                  :previous-commit prev-commit)))))))
+
+
 (defun blame-reveal-format-header-default (commit-hash commit-info color)
-  "Default header formatter with abbreviated author names."
+  "Default header formatter with abbreviated author names and move/copy info."
   (if (string-match-p "^0+$" commit-hash)
       (make-blame-reveal-commit-display
        :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
@@ -151,10 +185,30 @@ Saves original margin widths and applies calculated width to configured side."
        :color color)
     (pcase-let ((`(,short-hash ,author ,date ,summary ,_timestamp ,_description) commit-info))
       (let* ((abbrev-author (blame-reveal--abbreviate-author author))
-             (short-date (blame-reveal--shorten-time date)))
+             (short-date (blame-reveal--shorten-time date))
+             (lines (list (format "▸ %s · %s · %s · %s"
+                                  abbrev-author summary short-date short-hash)))
+             (faces (list `(:foreground ,color :weight bold))))
+
+        ;; 添加移动/复制信息（只显示跨文件的）
+        (let* ((move-meta (blame-reveal--get-move-copy-meta commit-hash)))
+          (when move-meta
+            (let ((prev-file (plist-get move-meta :previous-file))
+                  (prev-commit (plist-get move-meta :previous-commit))
+                  (icon (blame-reveal--icon "nf-oct-file_moved")))
+              (setq lines
+                    (append lines
+                            (list (format "%s %s(%s)"
+                                          icon
+                                          prev-file
+                                          (substring prev-commit 0 7)))))
+              (setq faces
+                    (append faces
+                            (list `(:foreground ,color :height 0.9 :slant italic)))))))
+
         (make-blame-reveal-commit-display
-         :lines (list (format "▸ %s · %s · %s · %s" abbrev-author summary short-date short-hash))
-         :faces (list `(:foreground ,color :weight bold))
+         :lines lines
+         :faces faces
          :color color)))))
 
 (defun blame-reveal-format-inline-default (commit-hash commit-info color)
@@ -164,14 +218,27 @@ Saves original margin widths and applies calculated width to configured side."
        :lines (list (format "[%s]" blame-reveal-uncommitted-label))
        :faces (list `(:foreground ,color))
        :color color)
-    (pcase-let ((`(,hash ,author ,date ,msg ,_timestamp ,_description) commit-info))
-      (make-blame-reveal-commit-display
-       :lines (list (format "[%s] %s - %s"
-                            (substring hash 0 5)
-                            (blame-reveal--abbreviate-author author)
-                            (substring msg 0 (min 40 (length msg)))))
-       :faces (list `(:foreground ,color :height 0.95))
-       :color color))))
+    (pcase-let ((`(,hash ,author ,_date ,msg ,_ ,_) commit-info))
+      (let* ((base-text (format " %s %s"
+                                (blame-reveal--abbreviate-author author)
+                                (substring msg 0 (min 40 (length msg)))))
+             ;; 获取 move/copy 信息（只展示文件名）
+             (move-meta (blame-reveal--get-move-copy-meta commit-hash))
+             (move-info (when move-meta
+                          (let ((prev-file (plist-get move-meta :previous-file))
+                                (prev-commit (plist-get move-meta :previous-commit))
+                                (icon (blame-reveal--icon "nf-oct-file_moved")))
+                            (format " %s %s(%s)"
+                                    icon
+                                    (file-name-nondirectory prev-file)
+                                    (substring prev-commit 0 7)))))
+             (full-text (if move-info
+                            (concat base-text move-info)
+                          base-text)))
+        (make-blame-reveal-commit-display
+         :lines (list full-text)
+         :faces (list `(:foreground ,color :height 0.95))
+         :color color)))))
 
 (defun blame-reveal-format-margin-default (commit-hash commit-info color)
   "Default margin format function."
@@ -180,13 +247,19 @@ Saves original margin widths and applies calculated width to configured side."
        :lines (list "Uncommitted")
        :faces (list `(:foreground ,color))
        :color color)
-    (pcase-let ((`(,_hash ,author ,date ,_msg ,_timestamp ,_description) commit-info))
-      (make-blame-reveal-commit-display
-       :lines (list (format "%s · %s"
-                            (blame-reveal--abbreviate-author author)
-                            (blame-reveal--shorten-time date)))
-       :faces (list `(:foreground ,color :height 0.9))
-       :color color))))
+    (pcase-let ((`(,_hash ,author ,date ,_msg ,_ ,_) commit-info))
+      (let* ((base-text (format "%s · %s"
+                                (blame-reveal--abbreviate-author author)
+                                (blame-reveal--shorten-time date)))
+             ;; move/copy 存在就加前缀符号
+             (move-meta (blame-reveal--get-move-copy-meta commit-hash))
+             (full-text (if move-meta
+                            (concat (blame-reveal--icon "nf-oct-file_moved") base-text)
+                          base-text)))
+        (make-blame-reveal-commit-display
+         :lines (list full-text)
+         :faces (list `(:foreground ,color :height 0.9))
+         :color color)))))
 
 (defun blame-reveal--shorten-time (date-string)
   "Shorten DATE-STRING to very compact format.
@@ -371,7 +444,7 @@ For inline and margin styles, ensures the result is single-line."
            (pos (if is-inline (line-end-position) (line-beginning-position)))
            (ov (make-overlay pos (if is-margin (line-end-position) pos)))
            (color (blame-reveal-commit-display-color display))
-           (sticky-indicator (blame-reveal--get-sticky-indicator color)))
+           (sticky-indicator (blame-reveal--icon "nf-oct-fold_up" color "")))
       (overlay-put ov 'blame-reveal-sticky t)
       (cond
        (is-margin

@@ -176,51 +176,56 @@ Light theme: intensity controls darkness (0=light/invisible, 1=dark/visible)."
 (defun blame-reveal--render-visible-region ()
   "Render git blame fringe for visible region.
 Reuses existing overlays when possible to minimize visual disruption."
-  (when blame-reveal--blame-data
-    (let* ((range (blame-reveal--get-visible-line-range))
-           (start-line (car range))
-           (end-line (cdr range))
-           (blocks (blame-reveal--find-block-boundaries
-                    blame-reveal--blame-data start-line end-line))
-           (rendered-lines (make-hash-table :test 'eql)))
-      (run-hook-with-args 'blame-reveal-before-render-hook start-line end-line)
-      ;; Ensure commit info is loaded for visible blocks
-      (dolist (block blocks)
-        (let ((commit-hash (nth 1 block)))
-          (blame-reveal--ensure-commit-info commit-hash)))
-      ;; Update recent commits based on what's loaded so far
-      (blame-reveal--update-recent-commits)
-      ;; Render blocks
-      (dolist (block blocks)
-        (let* ((block-start (nth 0 block))
-               (commit-hash (nth 1 block))
-               (block-length (nth 2 block)))
-          ;; Skip uncommitted changes unless explicitly enabled
-          (unless (and (blame-reveal--is-uncommitted-p commit-hash)
-                       (not blame-reveal-show-uncommitted-fringe))
-            ;; Render permanent fringe for recent commits
-            (when (blame-reveal--should-render-commit commit-hash)
-              (let ((color (blame-reveal--get-commit-color commit-hash))
-                    (block-end (+ block-start block-length -1)))
-                ;; Render each line in visible range
-                (let ((render-start (max block-start start-line))
-                      (render-end (min block-end end-line)))
-                  (dotimes (i (- render-end render-start -1))
-                    (let ((line-num (+ render-start i)))
-                      (blame-reveal--create-fringe-overlay
-                       line-num color commit-hash)
-                      (puthash line-num t rendered-lines)))))))))
-      ;; Clean up overlays outside visible range
-      (dolist (overlay (blame-reveal--get-overlays-by-type 'fringe))
-        (when (overlay-buffer overlay)
-          (let ((line (plist-get (blame-reveal--get-overlay-metadata overlay) :line)))
-            (when (and line
-                       (not (gethash line rendered-lines))
-                       (or (< line start-line) (> line end-line)))
-              (blame-reveal--unregister-overlay overlay)))))
-      (run-hook-with-args 'blame-reveal-after-render-hook start-line end-line)
-      ;; Re-trigger header update
-      (blame-reveal--update-header))))
+  (when (and blame-reveal--blame-data
+             (buffer-file-name)
+             (not (= (point-max) 1)))
+    (when-let ((range (blame-reveal--get-visible-line-range)))
+      (condition-case err
+          (let* ((start-line (car range))
+                 (end-line (cdr range))
+                 (blocks (blame-reveal--find-block-boundaries
+                          blame-reveal--blame-data start-line end-line))
+                 (rendered-lines (make-hash-table :test 'eql)))
+            (run-hook-with-args 'blame-reveal-before-render-hook start-line end-line)
+            ;; Ensure commit info is loaded for visible blocks
+            (dolist (block blocks)
+              (let ((commit-hash (nth 1 block)))
+                (blame-reveal--ensure-commit-info commit-hash)))
+            ;; Update recent commits based on what's loaded so far
+            (blame-reveal--update-recent-commits)
+            ;; Render blocks
+            (dolist (block blocks)
+              (let* ((block-start (nth 0 block))
+                     (commit-hash (nth 1 block))
+                     (block-length (nth 2 block)))
+                ;; Skip uncommitted changes unless explicitly enabled
+                (unless (and (blame-reveal--is-uncommitted-p commit-hash)
+                             (not blame-reveal-show-uncommitted-fringe))
+                  ;; Render permanent fringe for recent commits
+                  (when (blame-reveal--should-render-commit commit-hash)
+                    (let ((color (blame-reveal--get-commit-color commit-hash))
+                          (block-end (+ block-start block-length -1)))
+                      ;; Render each line in visible range
+                      (let ((render-start (max block-start start-line))
+                            (render-end (min block-end end-line)))
+                        (dotimes (i (- render-end render-start -1))
+                          (let ((line-num (+ render-start i)))
+                            (blame-reveal--create-fringe-overlay
+                             line-num color commit-hash)
+                            (puthash line-num t rendered-lines)))))))))
+            ;; Clean up overlays outside visible range
+            (dolist (overlay (blame-reveal--get-overlays-by-type 'fringe))
+              (when (overlay-buffer overlay)
+                (let ((line (plist-get (blame-reveal--get-overlay-metadata overlay) :line)))
+                  (when (and line
+                             (not (gethash line rendered-lines))
+                             (or (< line start-line) (> line end-line)))
+                    (blame-reveal--unregister-overlay overlay)))))
+            (run-hook-with-args 'blame-reveal-after-render-hook start-line end-line)
+            ;; Re-trigger header update
+            (blame-reveal--update-header))
+        (error
+         (message "Error rendering visible region: %s" (error-message-string err)))))))
 
 (defun blame-reveal--render-expanded-region (start-line end-line)
   "Render blame fringe for newly expanded region.
@@ -363,20 +368,25 @@ Delays rendering until cursor movement stops."
   "Implementation of scroll handler for buffer BUF."
   (when (buffer-live-p buf)
     (with-current-buffer buf
-      (when blame-reveal-mode
-        (when blame-reveal--blame-data-range
-          (let* ((range (blame-reveal--get-visible-line-range))
-                 (start-line (car range))
-                 (end-line (cdr range))
-                 (current-start (car blame-reveal--blame-data-range))
-                 (current-end (cdr blame-reveal--blame-data-range)))
-            (when (or (< start-line current-start)
-                      (> end-line current-end))
-              (blame-reveal--ensure-range-loaded start-line end-line))))
-        (unless (and (eq blame-reveal--state-status 'loading)
-                     (eq blame-reveal--state-operation 'expansion))
-          (blame-reveal--render-visible-region)
-          (blame-reveal--update-sticky-header))))))
+      (when (and blame-reveal-mode
+                 (buffer-file-name))
+        (condition-case err
+            (progn
+              (when blame-reveal--blame-data-range
+                (when-let ((range (blame-reveal--get-visible-line-range)))
+                  (let ((start-line (car range))
+                        (end-line (cdr range))
+                        (current-start (car blame-reveal--blame-data-range))
+                        (current-end (cdr blame-reveal--blame-data-range)))
+                    (when (or (< start-line current-start)
+                              (> end-line current-end))
+                      (blame-reveal--ensure-range-loaded start-line end-line)))))
+              (unless (and (eq blame-reveal--state-status 'loading)
+                           (eq blame-reveal--state-operation 'expansion))
+                (blame-reveal--render-visible-region)
+                (blame-reveal--update-sticky-header)))
+          (error
+           (message "Error in scroll handler: %s" (error-message-string err))))))))
 
 (defun blame-reveal--on-scroll ()
   "Handle scroll event with debouncing.
@@ -477,19 +487,44 @@ Recalculates colors and refreshes all displays."
 (defun blame-reveal--full-update ()
   "Full update: reload blame data and render visible region."
   (interactive)
-  ;; Cancel current operation
+  ;; 强制取消当前操作并清理
   (when (blame-reveal--state-is-busy-p)
-    (blame-reveal--state-cancel "full update requested"))
-  ;; Reset data
-  (setq blame-reveal--blame-data nil
-        blame-reveal--blame-data-range nil
-        blame-reveal--commit-info nil
-        blame-reveal--color-map nil
-        blame-reveal--timestamps nil
-        blame-reveal--recent-commits nil
-        blame-reveal--all-commits-loaded nil)
-  ;; Reload
-  (blame-reveal--load-blame-data))
+    (message "[Update] Cancelling current operation...")
+    ;; 立即停止动画
+    (blame-reveal--stop-loading-animation)
+    ;; 立即清理异步资源
+    (when blame-reveal--state-process
+      (when (process-live-p blame-reveal--state-process)
+        (delete-process blame-reveal--state-process))
+      (setq blame-reveal--state-process nil))
+    (when blame-reveal--state-buffer
+      (when (buffer-live-p blame-reveal--state-buffer)
+        (kill-buffer blame-reveal--state-buffer))
+      (setq blame-reveal--state-buffer nil))
+    ;; 重置状态
+    (setq blame-reveal--state-status 'idle
+          blame-reveal--state-operation nil
+          blame-reveal--state-mode nil
+          blame-reveal--state-metadata nil
+          blame-reveal--process-id nil))
+
+  ;; 短暂延迟，确保清理完成
+  (run-with-timer
+   0.1 nil
+   (lambda (buf)
+     (when (buffer-live-p buf)
+       (with-current-buffer buf
+         ;; Reset data
+         (setq blame-reveal--blame-data nil
+               blame-reveal--blame-data-range nil
+               blame-reveal--commit-info nil
+               blame-reveal--color-map nil
+               blame-reveal--timestamps nil
+               blame-reveal--recent-commits nil
+               blame-reveal--all-commits-loaded nil)
+         ;; Reload
+         (blame-reveal--load-blame-data))))
+   (current-buffer)))
 
 (provide 'blame-reveal-ui)
 ;;; blame-reveal-ui.el ends here

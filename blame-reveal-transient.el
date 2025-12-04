@@ -231,6 +231,40 @@
                          nil t))
               (user-error "Margin side only applies when header-style is 'margin'"))))
 
+;;; Move/Copy Detection
+
+(transient-define-suffix blame-reveal-toggle-move-detection ()
+  "Toggle move/copy detection and reload."
+  :key "M"
+  :description (lambda ()
+                 (if blame-reveal--detect-moves
+                     "Move/copy: Enabled"
+                   "Move/copy: Disabled"))
+  :transient t
+  (interactive)
+  (setq blame-reveal--detect-moves (not blame-reveal--detect-moves))
+  ;; 清空 metadata（关闭时）
+  (unless blame-reveal--detect-moves
+    (setq blame-reveal--move-copy-metadata nil))
+  ;; 重新加载
+  (blame-reveal--full-update)
+  ;; 强制刷新当前 header（关键！）
+  (run-with-timer 0.5 nil
+                  (lambda (buf)
+                    (when (buffer-live-p buf)
+                      (with-current-buffer buf
+                        (when blame-reveal-mode
+                          ;; 清除旧 header
+                          (when blame-reveal--header-overlay
+                            (delete-overlay blame-reveal--header-overlay)
+                            (setq blame-reveal--header-overlay nil))
+                          ;; 触发重新渲染
+                          (setq blame-reveal--current-block-commit nil)
+                          (blame-reveal--update-header)))))
+                  (current-buffer))
+  (message "Move/copy detection: %s"
+           (if blame-reveal--detect-moves "enabled" "disabled")))
+
 ;;; Color Settings Infixes
 
 (transient-define-infix blame-reveal--infix-days-limit ()
@@ -257,26 +291,144 @@
   :class 'blame-reveal-lisp-variable
   :variable 'blame-reveal-gradient-quality
   :display-map (blame-reveal--get-display-map 'gradient-quality)
-  :key "q"
+  :key "Q"
   :reader (lambda (prompt _ _)
             (intern (completing-read
                      prompt '("strict" "auto" "relaxed")
                      nil t))))
 
-(transient-define-infix blame-reveal--infix-color-hue ()
-  "Color scheme hue (0-360)."
-  :description "Color hue"
-  :class 'transient-lisp-variable
-  :variable 'blame-reveal-color-scheme
-  :key "H"
-  :reader (lambda (prompt _ _)
-            (let* ((current-hue (plist-get blame-reveal-color-scheme :hue))
-                   (new-hue (read-number
-                             (format "%s (current: %s): "
-                                     prompt
-                                     (or current-hue "default"))
-                             (or current-hue 200))))
-              (plist-put (copy-sequence blame-reveal-color-scheme) :hue new-hue))))
+(transient-define-suffix blame-reveal--edit-hue ()
+  "Edit color scheme hue."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :hue))
+         (new (read-number (format "Hue (0-360, current: %d): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :hue new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-dark-newest ()
+  "Edit dark theme newest lightness."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :dark-newest))
+         (new (read-number (format "Dark newest (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :dark-newest new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-dark-oldest ()
+  "Edit dark theme oldest lightness."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :dark-oldest))
+         (new (read-number (format "Dark oldest (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :dark-oldest new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-light-newest ()
+  "Edit light theme newest lightness."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :light-newest))
+         (new (read-number (format "Light newest (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :light-newest new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-light-oldest ()
+  "Edit light theme oldest lightness."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :light-oldest))
+         (new (read-number (format "Light oldest (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :light-oldest new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-sat-min ()
+  "Edit saturation minimum."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :saturation-min))
+         (new (read-number (format "Saturation min (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :saturation-min new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+(transient-define-suffix blame-reveal--edit-sat-max ()
+  "Edit saturation maximum."
+  :transient t
+  (interactive)
+  (let* ((current (plist-get blame-reveal-color-scheme :saturation-max))
+         (new (read-number (format "Saturation max (current: %.2f): " current) current)))
+    (setq blame-reveal-color-scheme
+          (plist-put (copy-sequence blame-reveal-color-scheme) :saturation-max new))
+    (when blame-reveal-mode
+      (blame-reveal--recolor-and-render))))
+
+;;; 改进后的子菜单
+
+(transient-define-prefix blame-reveal-color-scheme-menu ()
+  "Configure color scheme."
+  [:description
+   (lambda () (format "Color Scheme [H:%d°]"
+                      (plist-get blame-reveal-color-scheme :hue)))
+   ["Quick Presets"
+    ("1" "Blue" (lambda () (interactive) (blame-reveal--apply-color-preset 'blue)))
+    ("2" "Green" (lambda () (interactive) (blame-reveal--apply-color-preset 'green)))
+    ("3" "Purple" (lambda () (interactive) (blame-reveal--apply-color-preset 'purple)))
+    ("4" "Orange" (lambda () (interactive) (blame-reveal--apply-color-preset 'orange)))
+    ("5" "Subtle" (lambda () (interactive) (blame-reveal--apply-color-preset 'subtle)))
+    ("6" "Vivid" (lambda () (interactive) (blame-reveal--apply-color-preset 'vivid)))]
+   ["Hue"
+    ("h" "Hue (0-360)" blame-reveal--edit-hue)]
+   ["Dark Theme"
+    ("n" "Newest" blame-reveal--edit-dark-newest)
+    ("o" "Oldest" blame-reveal--edit-dark-oldest)]
+   ["Light Theme"
+    ("N" "Newest" blame-reveal--edit-light-newest)
+    ("O" "Oldest" blame-reveal--edit-light-oldest)]
+   ["Saturation"
+    ("s" "Min" blame-reveal--edit-sat-min)
+    ("S" "Max" blame-reveal--edit-sat-max)]]
+  [["Actions"
+    ("R" "Refresh" blame-reveal--full-update :transient t)
+    ("q" "Back" transient-quit-one)]])
+
+(transient-define-prefix blame-reveal-color-scheme-menu ()
+  "Configure color scheme."
+  [:description
+   (lambda () (format "Color Scheme [H:%d°]"
+                      (plist-get blame-reveal-color-scheme :hue)))
+   ["Quick Presets"
+    ("1" "Blue" (lambda () (interactive) (blame-reveal--apply-color-preset 'blue)))
+    ("2" "Green" (lambda () (interactive) (blame-reveal--apply-color-preset 'green)))
+    ("3" "Purple" (lambda () (interactive) (blame-reveal--apply-color-preset 'purple)))
+    ("4" "Orange" (lambda () (interactive) (blame-reveal--apply-color-preset 'orange)))
+    ("5" "Subtle" (lambda () (interactive) (blame-reveal--apply-color-preset 'subtle)))
+    ("6" "Vivid" (lambda () (interactive) (blame-reveal--apply-color-preset 'vivid)))]
+   ["Hue"
+    ("h" "Hue (0-360)" blame-reveal--edit-hue)]
+   ["Dark Theme"
+    ("n" "Newest" blame-reveal--edit-dark-newest)
+    ("o" "Oldest" blame-reveal--edit-dark-oldest)]
+   ["Light Theme"
+    ("N" "Newest" blame-reveal--edit-light-newest)
+    ("O" "Oldest" blame-reveal--edit-light-oldest)]
+   ["Saturation"
+    ("s" "Min" blame-reveal--edit-sat-min)
+    ("S" "Max" blame-reveal--edit-sat-max)]]
+  [["Actions"
+    ("R" "Refresh" blame-reveal--full-update :transient t)
+    ("q" "Back" transient-quit-one)]])
 
 ;;; Options Infixes
 
@@ -369,8 +521,44 @@
 ;;; Main Transient Menu
 
 ;;;###autoload (autoload 'blame-reveal-menu "blame-reveal-transient" nil t)
+;; (transient-define-prefix blame-reveal-menu ()
+;;   "Transient menu for blame-reveal configuration and commands."
+;;   [:description blame-reveal--menu-title
+;;    ["Display"
+;;     ("=" blame-reveal--toggle-scope)
+;;     (blame-reveal--infix-header-style)
+;;     (blame-reveal--infix-fringe-side)
+;;     (blame-reveal--infix-margin-side)]
+;;    ["Colors"
+;;     (blame-reveal--infix-days-limit)
+;;     (blame-reveal--infix-gradient-quality)
+;;     (blame-reveal--infix-color-hue)]
+;;    ["Options"
+;;     (blame-reveal--infix-show-uncommitted-fringe)
+;;     (blame-reveal--infix-lazy-threshold)
+;;     (blame-reveal--infix-async-blame)]]
+;;   [["Navigation"
+;;     :pad-keys t
+;;     ("b" "Blame recursively" blame-reveal-blame-recursively :transient t)
+;;     ("p" "Blame back" blame-reveal-blame-back :transient t)
+;;     ("g" "Blame at revision" blame-reveal-blame-at-revision)
+;;     ("r" "Reset to HEAD" blame-reveal-reset-to-head :transient t)]
+;;    ["Inspect"
+;;     :pad-keys t
+;;     ("c" "Copy hash" blame-reveal-copy-commit-hash)
+;;     ("v" "Show diff" blame-reveal-show-commit-diff)
+;;     ("d" "Show details" blame-reveal-show-commit-details)
+;;     ("h" "File history" blame-reveal-show-file-history)
+;;     ("l" "Line history" blame-reveal-show-line-history)]
+;;    ["Actions"
+;;     :pad-keys t
+;;     ("R" "Refresh" blame-reveal--full-update :transient t)
+;;     ("P" "Presets" blame-reveal-presets :transient t)
+;;     ("?" "Auto calc" blame-reveal-show-auto-calculation)
+;;     ("C" "Clear cache" blame-reveal-clear-auto-cache :transient t)
+;;     ("q" "Quit" transient-quit-one)]])
 (transient-define-prefix blame-reveal-menu ()
-  "Transient menu for blame-reveal configuration and commands."
+  "Transient menu for blame-reveal configuration."
   [:description blame-reveal--menu-title
    ["Display"
     ("=" blame-reveal--toggle-scope)
@@ -380,31 +568,20 @@
    ["Colors"
     (blame-reveal--infix-days-limit)
     (blame-reveal--infix-gradient-quality)
-    (blame-reveal--infix-color-hue)]
+    ("H" "Color scheme..." blame-reveal-color-scheme-menu)]
    ["Options"
     (blame-reveal--infix-show-uncommitted-fringe)
     (blame-reveal--infix-lazy-threshold)
-    (blame-reveal--infix-async-blame)]]
-  [["Navigation"
-    :pad-keys t
-    ("b" "Blame recursively" blame-reveal-blame-recursively :transient t)
-    ("p" "Blame back" blame-reveal-blame-back :transient t)
-    ("g" "Blame at revision" blame-reveal-blame-at-revision)
-    ("r" "Reset to HEAD" blame-reveal-reset-to-head :transient t)]
-   ["Inspect"
-    :pad-keys t
-    ("c" "Copy hash" blame-reveal-copy-commit-hash)
-    ("v" "Show diff" blame-reveal-show-commit-diff)
-    ("d" "Show details" blame-reveal-show-commit-details)
-    ("h" "File history" blame-reveal-show-file-history)
-    ("l" "Line history" blame-reveal-show-line-history)]
-   ["Actions"
-    :pad-keys t
-    ("R" "Refresh" blame-reveal--full-update :transient t)
-    ("P" "Presets" blame-reveal-presets :transient t)
-    ("?" "Auto calc" blame-reveal-show-auto-calculation)
-    ("C" "Clear cache" blame-reveal-clear-auto-cache :transient t)
-    ("q" "Quit" transient-quit-one)]])
+    (blame-reveal--infix-async-blame)
+    ("M" blame-reveal-toggle-move-detection)]]
+
+  ["Utilities"
+   :pad-keys t
+   ("R" "Refresh" blame-reveal--full-update :transient t)
+   ("P" "Presets" blame-reveal-presets :transient t)
+   ("?" "Auto calc info" blame-reveal-show-auto-calculation)
+   ("C" "Clear cache" blame-reveal-clear-auto-cache :transient t)
+   ("q" "Quit" transient-quit-one)])
 
 ;;; Helper Functions for Integration
 

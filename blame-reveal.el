@@ -19,6 +19,7 @@
 ;; - Lazy loading for large files (configurable threshold)
 ;; - Incremental commit info loading with caching
 ;; - Recursive blame navigation with historical context
+;; - Move/copy detection with progressive disclosure
 ;; - Sticky headers for long commits
 ;; - Theme-aware color schemes with HSL customization
 ;; - Customizable display layouts (line/compact/full/none)
@@ -31,6 +32,7 @@
 ;;   (setq blame-reveal-gradient-quality 'auto)       ; Balanced quality
 ;;   (setq blame-reveal-display-layout 'compact)      ; Header format
 ;;   (setq blame-reveal-color-scheme '(:hue 210 ...)) ; Color theme
+;;   (setq blame-reveal-move-copy-mode 'prompt)       ; Ask at boundaries
 ;;
 ;; See full documentation: https://github.com/lucius-chen/blame-reveal
 
@@ -73,6 +75,16 @@
 (defvar blame-reveal-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "q") #'blame-reveal-mode)
+    (define-key map (kbd "c") #'blame-reveal-copy-commit-hash)
+    (define-key map (kbd "d") #'blame-reveal-show-commit-diff)
+    (define-key map (kbd "s") #'blame-reveal-show-commit-details)
+    (define-key map (kbd "h") #'blame-reveal-show-file-history)
+    (define-key map (kbd "l") #'blame-reveal-show-line-history)
+    (define-key map (kbd "b") #'blame-reveal-blame-recursively)
+    (define-key map (kbd "p") #'blame-reveal-blame-back)
+    (define-key map (kbd "^") #'blame-reveal-blame-back)
+    (define-key map (kbd "g") #'blame-reveal-blame-at-revision)
+    (define-key map (kbd "r") #'blame-reveal-reset-to-head)
     map)
   "Keymap for blame-reveal-mode.")
 
@@ -562,11 +574,16 @@ For small files, sync loading is actually faster due to less overhead."
 ;;; Mode Line Functions
 
 (defun blame-reveal--mode-line-revision ()
-  "Return mode line string showing current revision."
-  (when blame-reveal--revision-display
-    (format " @%s"
-            (propertize blame-reveal--revision-display
-                        'face 'font-lock-constant-face))))
+  "Return mode line string showing current revision and M/C status."
+  (when (or blame-reveal--revision-display
+            blame-reveal--detect-moves)
+    (let* ((rev-part (when blame-reveal--revision-display
+                       (propertize (format " @%s" blame-reveal--revision-display)
+                                   'face 'font-lock-constant-face)))
+           (mc-part (when blame-reveal--detect-moves
+                      (propertize (if rev-part " [M/C]" " [M/C enabled]")
+                                  'face 'warning))))
+      (concat rev-part mc-part))))
 
 (defun blame-reveal--setup-mode-line ()
   "Add revision info to mode line."
@@ -608,6 +625,10 @@ For small files, sync loading is actually faster due to less overhead."
             (setq blame-reveal--auto-days-cache nil)
             (setq blame-reveal--blame-data-range nil)
             (setq blame-reveal--all-commits-loaded nil)
+
+            ;; Initialize move/copy metadata
+            (unless (hash-table-p blame-reveal--move-copy-metadata)
+              (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
 
             ;; Load blame data
             (blame-reveal--load-blame-data)
@@ -672,6 +693,9 @@ For small files, sync loading is actually faster due to less overhead."
     (setq blame-reveal--auto-days-cache nil)
     (setq blame-reveal--blame-data-range nil)
     (setq blame-reveal--all-commits-loaded nil)
+
+    (setq blame-reveal--detect-moves nil)
+    (setq blame-reveal--move-copy-metadata nil)
 
     (unless (cl-some (lambda (buf)
                        (with-current-buffer buf
