@@ -419,7 +419,7 @@ For inline and margin styles, ensures the result is single-line."
            (pos (if is-inline (line-end-position) (line-beginning-position)))
            (ov (make-overlay pos (if is-margin (line-end-position) pos)))
            (color (blame-reveal-commit-display-color display))
-           (sticky-indicator (blame-reveal--icon "nf-oct-fold_up" color "")))
+           (sticky-indicator (concat (blame-reveal--icon "nf-oct-fold_up" color "") " ")))
       (overlay-put ov 'blame-reveal-sticky t)
       (cond
        (is-margin
