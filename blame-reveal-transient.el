@@ -16,6 +16,7 @@
 
 (require 'transient)
 (require 'blame-reveal)
+(require 'cl-lib)
 
 ;;; Cached Constants
 
@@ -82,6 +83,15 @@
 
     (concat title scope (or revision ""))))
 
+(defun blame-reveal--refresh-header-after-load (&optional _)
+  "Refresh header after data reload (if needed)."
+  (when (and blame-reveal-mode blame-reveal--header-overlay)
+    (delete-overlay blame-reveal--header-overlay)
+    (setq blame-reveal--header-overlay nil)
+    (setq blame-reveal--current-block-commit nil)
+    (setq blame-reveal--last-rendered-commit nil)
+    (blame-reveal--update-header)))
+
 ;;; Custom Variable Class
 
 (defclass blame-reveal-lisp-variable (transient-lisp-variable)
@@ -144,14 +154,6 @@
   "Toggle boolean value."
   (not (oref obj value)))
 
-(cl-defmethod transient-infix-set ((obj blame-reveal-boolean-variable) value)
-  "Set boolean VALUE for OBJ."
-  (let ((var (oref obj variable)))
-    (oset obj value value)
-    (if (local-variable-p var)
-        (set (make-local-variable var) value)
-      (set var value))))
-
 ;;; Scope Management
 
 (transient-define-suffix blame-reveal--toggle-scope ()
@@ -178,14 +180,38 @@
 ;;; Auto-refresh after header-style change
 
 (cl-defmethod transient-infix-set :after ((obj blame-reveal-lisp-variable) value)
-  "Refresh transient menu after setting header-style to show/hide margin-side."
-  (when (eq (oref obj variable) 'blame-reveal-header-style)
-    ;; Short delay to let current operation complete
-    (run-with-idle-timer 0.05 nil
-                        (lambda ()
-                          (when (and transient-current-command
-                                    (eq transient-current-command 'blame-reveal-menu))
-                            (transient-setup 'blame-reveal-menu))))))
+  "Refresh display and transient menu after setting certain variables."
+  (let ((var (oref obj variable)))
+    (cond
+     ;; Header style changed
+     ((eq var 'blame-reveal-header-style)
+      (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+        (when (not (eq value 'margin))
+          (blame-reveal--restore-window-margins))
+        (blame-reveal--recolor-and-render)
+        (blame-reveal--force-update-header))
+      (run-with-idle-timer 0.05 nil
+                          (lambda ()
+                            (when (and transient-current-command
+                                      (eq transient-current-command 'blame-reveal-menu))
+                              (transient-setup 'blame-reveal-menu)))))
+     ;; Fringe side
+     ((eq var 'blame-reveal-fringe-side)
+      (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+        (blame-reveal--recolor-and-render)
+        (blame-reveal--force-update-header)))
+     ;; Margin side
+     ((eq var 'blame-reveal-margin-side)
+      (when (and (boundp 'blame-reveal-mode)
+                 blame-reveal-mode
+                 (eq blame-reveal-header-style 'margin))
+        (blame-reveal--recolor-and-render)
+        (blame-reveal--force-update-header)))
+     ;; Uncommitted fringe
+     ((eq var 'blame-reveal-show-uncommitted-fringe)
+      (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+        (blame-reveal--recolor-and-render)
+        (blame-reveal--force-update-header))))))
 
 ;;; Display Settings Infixes
 
@@ -240,28 +266,15 @@
                  (if blame-reveal--detect-moves
                      "Move/copy: Enabled"
                    "Move/copy: Disabled"))
-  :transient t
   (interactive)
   (setq blame-reveal--detect-moves (not blame-reveal--detect-moves))
-  ;; 清空 metadata（关闭时）
   (unless blame-reveal--detect-moves
     (setq blame-reveal--move-copy-metadata nil))
-  ;; 重新加载
+  ;; Ensure hook is registered (safe to call multiple times)
+  (add-hook 'blame-reveal-after-load-hook
+            #'blame-reveal--refresh-header-after-load
+            nil t)
   (blame-reveal--full-update)
-  ;; 强制刷新当前 header（关键！）
-  (run-with-timer 0.5 nil
-                  (lambda (buf)
-                    (when (buffer-live-p buf)
-                      (with-current-buffer buf
-                        (when blame-reveal-mode
-                          ;; clean old header
-                          (when blame-reveal--header-overlay
-                            (delete-overlay blame-reveal--header-overlay)
-                            (setq blame-reveal--header-overlay nil))
-                          ;; Trigger re-render
-                          (setq blame-reveal--current-block-commit nil)
-                          (blame-reveal--update-header)))))
-                  (current-buffer))
   (message "Move/copy detection: %s"
            (if blame-reveal--detect-moves "enabled" "disabled")))
 
@@ -374,6 +387,7 @@
     (when blame-reveal-mode
       (blame-reveal--recolor-and-render))))
 
+;;;###autoload
 (transient-define-prefix blame-reveal-color-scheme-menu ()
   "Configure color scheme."
   [:description
@@ -508,6 +522,7 @@
     (blame-reveal--full-update))
   (message "Applied minimal preset"))
 
+;;;###autoload
 (transient-define-prefix blame-reveal-presets ()
   "Manage blame-reveal presets."
   ["Presets"
@@ -517,7 +532,7 @@
    [("q" "Back" transient-quit-one)]])
 
 ;;; Main Transient Menu
-
+;;;###autoload
 (transient-define-prefix blame-reveal-menu ()
   "Transient menu for blame-reveal configuration."
   [:description blame-reveal--menu-title
@@ -543,14 +558,6 @@
    ("?" "Auto calc info" blame-reveal-show-auto-calculation)
    ("C" "Clear cache" blame-reveal-clear-auto-cache :transient t)
    ("q" "Quit" transient-quit-one)])
-
-;;; Helper Functions for Integration
-
-(defun blame-reveal-transient-setup-keys ()
-  "Setup recommended keybindings for blame-reveal transient menu."
-  (when (boundp 'blame-reveal-mode-map)
-    (define-key blame-reveal-mode-map (kbd "C-c e m") #'blame-reveal-menu)
-    (define-key blame-reveal-mode-map (kbd "C-c e p") #'blame-reveal-presets)))
 
 (provide 'blame-reveal-transient)
 ;;; blame-reveal-transient.el ends here

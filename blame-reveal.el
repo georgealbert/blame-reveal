@@ -85,6 +85,7 @@
     (define-key map (kbd "^") #'blame-reveal-blame-back)
     (define-key map (kbd "g") #'blame-reveal-blame-at-revision)
     (define-key map (kbd "r") #'blame-reveal-reset-to-head)
+    (define-key map (kbd "m") #'blame-reveal-menu)
     map)
   "Keymap for blame-reveal-mode.")
 
@@ -571,6 +572,43 @@ For small files, sync loading is actually faster due to less overhead."
                  (const :tag "Always use built-in" nil))
   :group 'blame-reveal)
 
+;;; Interface Functions
+
+(defun blame-reveal--force-update-header ()
+  "Force immediate header update without idle-timer delay.
+Used when settings change via transient menu."
+  (when blame-reveal--blame-data
+    ;; Cancel any pending idle timer
+    (when blame-reveal--header-update-timer
+      (cancel-timer blame-reveal--header-update-timer)
+      (setq blame-reveal--header-update-timer nil))
+    ;; Update immediately (bypass idle delay)
+    (blame-reveal--update-header-impl)))
+
+;;; Text-Scale Support
+
+(defun blame-reveal--get-line-height ()
+  "Get current line height in pixels."
+  (let ((line-height (line-pixel-height)))
+    (if (> line-height 0)
+        line-height
+      (ceiling (frame-char-height)))))
+
+(defun blame-reveal--update-fringe-bitmap ()
+  "Update fringe bitmap to match current line height."
+  (let* ((line-height (blame-reveal--get-line-height))
+         (rows (max 8 (min 64 line-height)))
+         (bitmap-rows (make-list rows #b11111111)))
+    (define-fringe-bitmap 'blame-reveal-full
+      (vconcat bitmap-rows)
+      nil 8 'center)))
+
+(defun blame-reveal--on-text-scale-change ()
+  "Handle text-scale changes: update bitmap and re-render."
+  (when blame-reveal-mode
+    (blame-reveal--update-fringe-bitmap)
+    (blame-reveal--recolor-and-render)))
+
 ;;; Mode Line Functions
 
 (defun blame-reveal--mode-line-revision ()
@@ -614,58 +652,57 @@ Returns t if valid, otherwise prints message and returns nil."
 
 (defun blame-reveal--setup-buffer-resources ()
   "Initialize all resources, hooks, and state for the current buffer."
-  ;; 1. Keymap & Emulation
+  ;; Keymap & Emulation
   (setq blame-reveal--emulation-alist
         `((blame-reveal-mode . ,blame-reveal-mode-map)))
   (add-to-list 'emulation-mode-map-alists 'blame-reveal--emulation-alist)
-  ;; 2. Subsystems Init
+  ;; Subsystems Init
   (blame-reveal--init-overlay-registry)
   (blame-reveal--init-color-strategy)
-  ;; 3. State & Cache Reset
+  ;; State & Cache Reset
   (setq blame-reveal--auto-days-cache nil
         blame-reveal--blame-data-range nil
         blame-reveal--all-commits-loaded nil)
   ;; Initializing hash table
   (unless (hash-table-p blame-reveal--move-copy-metadata)
     (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
-  ;; 4. UI Setup
+  ;; UI Setup
   (blame-reveal--setup-mode-line)
   (blame-reveal--setup-theme-advice)
-  ;; 5. Hooks
+  ;; Text-scale support
+  (add-hook 'text-scale-mode-hook #'blame-reveal--on-text-scale-change nil t)
+  (blame-reveal--update-fringe-bitmap)
+  ;; Hooks
   (add-hook 'after-save-hook #'blame-reveal--full-update nil t)
   (add-hook 'window-scroll-functions #'blame-reveal--scroll-handler nil t)
   (add-hook 'post-command-hook #'blame-reveal--update-header nil t)
   (add-hook 'window-configuration-change-hook #'blame-reveal--render-visible-region nil t)
-  ;; 6. Trigger Loading
+  ;; Trigger Loading
   (blame-reveal--load-blame-data))
 
 (defun blame-reveal--cleanup-buffer-resources ()
   "Completely tear down all blame-reveal resources for the current buffer.
 Handles Hooks, Timers, Overlays, and State."
-
-  ;; 1. Remove Hooks (First, stop reacting to events)
+  ;; Remove Hooks (First, stop reacting to events)
   (remove-hook 'after-save-hook #'blame-reveal--full-update t)
   (remove-hook 'window-scroll-functions #'blame-reveal--scroll-handler t)
   (remove-hook 'post-command-hook #'blame-reveal--update-header t)
   (remove-hook 'window-configuration-change-hook #'blame-reveal--render-visible-region t)
 
-  ;; 2. Cancel All Timers (Using the helper from state or defining locally)
+  ;; Cancel All Timers (Using the helper from state or defining locally)
   (blame-reveal--cleanup-operation-ui-artifacts)
 
-  ;; 3. Cancel State Machine (Stops async processes)
+  ;; Cancel State Machine (Stops async processes)
   (blame-reveal--state-cancel "mode disabled")
-
-  ;; 4. Clean UI / Overlays
+  ;; Clean UI / Overlays
   (blame-reveal--restore-window-margins)
   (blame-reveal--clear-all-overlays) ; The unified registry clearer
-
   ;; Legacy/Specific UI cleanup
   (when (bound-and-true-p blame-reveal--header-overlay)
     (delete-overlay blame-reveal--header-overlay)
     (setq blame-reveal--header-overlay nil))
   (blame-reveal--clear-sticky-header)
-
-  ;; 5. Reset Cache & Variables
+  ;; Reset Cache & Variables
   (setq blame-reveal--auto-days-cache nil
         blame-reveal--blame-data-range nil
         blame-reveal--all-commits-loaded nil
@@ -675,9 +712,9 @@ Handles Hooks, Timers, Overlays, and State."
         blame-reveal--blame-stack nil
         blame-reveal--current-revision nil
         blame-reveal--revision-display nil)
-
-  ;; 6. Advice Cleanup
-  (blame-reveal--remove-theme-advice))
+  ;; Advice Cleanup
+  (blame-reveal--remove-theme-advice)
+  (remove-hook 'text-scale-mode-hook #'blame-reveal--on-text-scale-change t))
 
 ;;;###autoload
 (define-minor-mode blame-reveal-mode
