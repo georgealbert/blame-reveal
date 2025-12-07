@@ -154,8 +154,10 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
               :detect-moves blame-reveal--detect-moves
               :blame-data blame-reveal--blame-data
               :blame-data-range blame-reveal--blame-data-range
-              :commit-info (copy-hash-table blame-reveal--commit-info)
-              :color-map (copy-hash-table blame-reveal--color-map)
+              :commit-info (when (hash-table-p blame-reveal--commit-info)
+                             (copy-hash-table blame-reveal--commit-info))
+              :color-map (when (hash-table-p blame-reveal--color-map)
+                           (copy-hash-table blame-reveal--color-map))
               ;; timestamps is a cons cell (min . max)
               :timestamps (when blame-reveal--timestamps
                             (cons (car blame-reveal--timestamps)
@@ -171,13 +173,32 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
   (setq blame-reveal--revision-display (plist-get state :revision-display))
   (setq blame-reveal--blame-data (plist-get state :blame-data))
   (setq blame-reveal--blame-data-range (plist-get state :blame-data-range))
-  (setq blame-reveal--commit-info (plist-get state :commit-info))
-  (setq blame-reveal--color-map (plist-get state :color-map))
+  ;; Ensure commit-info is a hash-table
+  (let ((commit-info (plist-get state :commit-info)))
+    (setq blame-reveal--commit-info
+          (if (hash-table-p commit-info)
+              commit-info
+            (make-hash-table :test 'equal))))
+  ;; Ensure color-map is a hash-table
+  (let ((color-map (plist-get state :color-map)))
+    (setq blame-reveal--color-map
+          (if (hash-table-p color-map)
+              color-map
+            (make-hash-table :test 'equal))))
   (setq blame-reveal--timestamps (plist-get state :timestamps))
   (setq blame-reveal--recent-commits (plist-get state :recent-commits))
   (blame-reveal--smooth-transition-render)
-  (goto-char (plist-get state :point))
-  (set-window-start nil (plist-get state :window-start)))
+  ;; Safely restore point and window-start
+  (let ((saved-point (plist-get state :point))
+        (saved-window-start (plist-get state :window-start)))
+    (when (and saved-point
+               (>= saved-point (point-min))
+               (<= saved-point (point-max)))
+      (goto-char saved-point))
+    (when (and saved-window-start
+               (>= saved-window-start (point-min))
+               (<= saved-window-start (point-max)))
+      (set-window-start nil saved-window-start))))
 
 ;;; Smooth Transition Rendering (Performance Critical)
 
@@ -695,20 +716,49 @@ Uses smooth transition to avoid flashing."
     ;; Look for HEAD state at bottom of stack
     (let ((head-state (car (last blame-reveal--blame-stack))))
       (if (and head-state (plist-get head-state :is-head-state))
-          ;; Found HEAD state - restore it using smooth transition
+          ;; Found HEAD state - restore data exactly like TEST A
           (progn
             (setq blame-reveal--blame-stack nil)
             (setq blame-reveal--current-revision nil)
             (setq blame-reveal--revision-display nil)
             (setq blame-reveal--auto-days-cache nil)
-            (blame-reveal--restore-state head-state)
+
+            ;; Restore data structures - exactly like TEST A
+            (setq blame-reveal--blame-data (plist-get head-state :blame-data))
+            (setq blame-reveal--blame-data-range (plist-get head-state :blame-data-range))
+
+            ;; Ensure hash-table types
+            (let ((commit-info (plist-get head-state :commit-info)))
+              (setq blame-reveal--commit-info
+                    (if (hash-table-p commit-info)
+                        commit-info
+                      (make-hash-table :test 'equal))))
+
+            (let ((color-map (plist-get head-state :color-map)))
+              (setq blame-reveal--color-map
+                    (if (hash-table-p color-map)
+                        color-map
+                      (make-hash-table :test 'equal))))
+
+            (setq blame-reveal--timestamps (plist-get head-state :timestamps))
+            (setq blame-reveal--recent-commits (plist-get head-state :recent-commits))
+
+            ;; Don't call any render functions - same as TEST A
             (message "Reset to HEAD"))
-        ;; No HEAD state found - fall back to full update
+
+        ;; No HEAD state found - reload data
         (setq blame-reveal--blame-stack nil)
         (setq blame-reveal--current-revision nil)
         (setq blame-reveal--revision-display nil)
         (setq blame-reveal--auto-days-cache nil)
-        (blame-reveal--full-update)
+        (setq blame-reveal--blame-data nil
+              blame-reveal--blame-data-range nil
+              blame-reveal--commit-info nil
+              blame-reveal--color-map nil
+              blame-reveal--timestamps nil
+              blame-reveal--recent-commits nil
+              blame-reveal--all-commits-loaded nil)
+        (blame-reveal--load-blame-data)
         (message "Reset to HEAD (reloaded)"))))
 
    ;; Case 2: At HEAD but have stack
@@ -724,14 +774,18 @@ Uses smooth transition to avoid flashing."
 
 (unless (fboundp 'copy-hash-table)
   (defun copy-hash-table (table)
-    "Make a copy of hash TABLE."
-    (let ((new-table (make-hash-table
-                      :test (hash-table-test table)
-                      :size (hash-table-size table))))
-      (maphash (lambda (key value)
-                 (puthash key value new-table))
-               table)
-      new-table)))
+    "Make a copy of hash TABLE.
+If TABLE is not a hash-table, return a new empty hash-table."
+    (if (hash-table-p table)
+        (let ((new-table (make-hash-table
+                          :test (hash-table-test table)
+                          :size (hash-table-size table))))
+          (maphash (lambda (key value)
+                     (puthash key value new-table))
+                   table)
+          new-table)
+      ;; Return empty hash-table if input is not a hash-table
+      (make-hash-table :test 'equal))))
 
 (provide 'blame-reveal-recursive)
 ;;; blame-reveal-recursive.el ends here

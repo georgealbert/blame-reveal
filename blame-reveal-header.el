@@ -347,12 +347,11 @@ For inline and margin styles, ensures the result is single-line."
                                                    (list blame-reveal-fringe-side 'blame-reveal-full fringe-face)))))
           (when sticky-indicator (setq result (concat result sticky-indicator " ")))
           (setq result (concat result (propertize line 'face face)))
-          ;; Only add newline for non-last lines
+          ;; Add newline between lines
           (when (< i (1- line-count))
             (setq result (concat result "\n"))))))
-    ;; For first line (line 1), add trailing newline to separate from code
-    (when (not need-leading-newline)
-      (setq result (concat result "\n")))
+    ;; Always add trailing newline to separate header from code
+    (setq result (concat result "\n"))
     (when show-fringe
       (setq result (concat result (propertize "!" 'display (list blame-reveal-fringe-side 'blame-reveal-full fringe-face)))))
     result))
@@ -361,9 +360,13 @@ For inline and margin styles, ensures the result is single-line."
   "Build block-style header (shows above code)."
   (save-excursion
     (goto-char (point-min)) (forward-line (1- line))
-    (let* ((pos (if (= line 1) (point-min) (progn (forward-line -1) (line-end-position))))
+    ;; 修改：对于非第一行，overlay 放在当前行的行首（换行符之后）而不是上一行的行尾
+    (let* ((pos (if (= line 1)
+                    (point-min)
+                  (line-beginning-position)))
            (ov (make-overlay pos pos))
-           (need-newline (not (= line 1))))
+           ;; 修改：非第一行不需要 leading newline，因为已经在新行上了
+           (need-newline nil))
       (overlay-put ov 'blame-reveal t)
       (overlay-put ov 'blame-reveal-header t)
       (overlay-put ov 'before-string
