@@ -125,9 +125,15 @@
 
 ;;; Color Access Functions
 
+(defvar blame-reveal--color-index 0
+  "color计数器，取模后从color list里面按顺序取color.")
+
 (defun blame-reveal--random-from-contrast-pool ()
   "从高对比度颜色池中随机选择"
-  (nth (random (length blame-reveal--high-contrast-colors)) blame-reveal--high-contrast-colors))
+  (setq blame-reveal--color-index (+ 1 blame-reveal--color-index))
+  ;; (nth (random (length blame-reveal--high-contrast-colors)) blame-reveal--high-contrast-colors)
+  (nth (mod (length blame-reveal--high-contrast-colors) blame-reveal--color-index) blame-reveal--high-contrast-colors)
+  )
 
 (defun blame-reveal--get-commit-color (commit-hash)
   (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
