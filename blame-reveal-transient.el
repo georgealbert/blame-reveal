@@ -84,12 +84,15 @@
     (concat title scope (or revision ""))))
 
 (defun blame-reveal--refresh-header-after-load (&optional _)
-  "Refresh header after data reload (if needed)."
-  (when (and blame-reveal-mode blame-reveal--header-overlay)
-    (delete-overlay blame-reveal--header-overlay)
-    (setq blame-reveal--header-overlay nil)
+  "Refresh header after data reload (if needed).
+Modified to avoid header flashing - clears cache to force rebuild in update-header."
+  (when blame-reveal-mode
+    ;; Clear cache to force update-header to rebuild
+    ;; update-header-impl already handles smooth transition (create new, delete old)
     (setq blame-reveal--current-block-commit nil)
     (setq blame-reveal--last-rendered-commit nil)
+    (setq blame-reveal--last-update-line nil)
+    ;; Call update-header which will smoothly rebuild
     (blame-reveal--update-header)))
 
 ;;; Custom Variable Class

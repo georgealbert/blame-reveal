@@ -360,12 +360,10 @@ For inline and margin styles, ensures the result is single-line."
   "Build block-style header (shows above code)."
   (save-excursion
     (goto-char (point-min)) (forward-line (1- line))
-    ;; 修改：对于非第一行，overlay 放在当前行的行首（换行符之后）而不是上一行的行尾
     (let* ((pos (if (= line 1)
                     (point-min)
                   (line-beginning-position)))
            (ov (make-overlay pos pos))
-           ;; 修改：非第一行不需要 leading newline，因为已经在新行上了
            (need-newline nil))
       (overlay-put ov 'blame-reveal t)
       (overlay-put ov 'blame-reveal-header t)

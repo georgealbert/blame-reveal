@@ -361,17 +361,24 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
                  (is-old-commit (and (not is-uncommitted)
                                      (not (blame-reveal--is-recent-commit-p commit-hash))))
                  (hide-header-fringe (and is-uncommitted
-                                          (not blame-reveal-show-uncommitted-fringe))))
+                                          (not blame-reveal-show-uncommitted-fringe)))
+                 ;; Check if we need to rebuild header
+                 (need-rebuild (or (not blame-reveal--header-overlay)
+                                   (not (equal commit-hash blame-reveal--last-rendered-commit)))))
             (when blame-reveal--temp-overlay-timer
               (cancel-timer blame-reveal--temp-overlay-timer)
               (setq blame-reveal--temp-overlay-timer nil))
-            (when blame-reveal--header-overlay
-              (delete-overlay blame-reveal--header-overlay)
-              (setq blame-reveal--header-overlay nil))
-            ;; Use same color for header as code lines
-            (setq blame-reveal--header-overlay
-                  (blame-reveal--create-header-overlay
-                   block-start commit-hash color hide-header-fringe))
+            ;; Smooth update: create new header first, then delete old one
+            ;; This avoids the "flash" where there's no header
+            (when need-rebuild
+              (let ((old-header blame-reveal--header-overlay))
+                ;; Create new header
+                (setq blame-reveal--header-overlay
+                      (blame-reveal--create-header-overlay
+                       block-start commit-hash color hide-header-fringe))
+                ;; Delete old header after new one is created
+                (when old-header
+                  (delete-overlay old-header))))
             (when (or is-old-commit
                       (and is-uncommitted blame-reveal-show-uncommitted-fringe))
               (setq blame-reveal--temp-overlay-timer
@@ -561,6 +568,28 @@ Used for immediate aborts (error or cancel)."
          ;; Reload
          (blame-reveal--load-blame-data))))
    (current-buffer)))
+
+(defun blame-reveal--soft-update ()
+  "Soft update: reload blame data without clearing UI.
+Useful for toggling settings like M/C detection where we want
+to avoid header flashing."
+  (interactive)
+  ;; Cancel any ongoing operation but don't clean up UI
+  (when (blame-reveal--state-is-busy-p)
+    (message "[Update] Cancelling current operation...")
+    (blame-reveal--stop-loading-animation)
+    ;; Cancel state but skip UI cleanup
+    (when (fboundp 'blame-reveal--state-cancel-no-ui-cleanup)
+      (blame-reveal--state-cancel-no-ui-cleanup "soft update requested")))
+  ;; Immediately reload data without delay
+  (setq blame-reveal--blame-data nil
+        blame-reveal--blame-data-range nil
+        blame-reveal--commit-info nil
+        blame-reveal--color-map nil
+        blame-reveal--timestamps nil
+        blame-reveal--recent-commits nil
+        blame-reveal--all-commits-loaded nil)
+  (blame-reveal--load-blame-data))
 
 (provide 'blame-reveal-ui)
 ;;; blame-reveal-ui.el ends here
