@@ -252,6 +252,27 @@ Returns list of (START-LINE COMMIT-HASH BLOCK-LENGTH)."
         (push (list block-start current-commit block-length) blocks)))
     (nreverse blocks)))
 
+(defun blame-reveal--ensure-hash-table (value &optional test)
+  "Ensure VALUE is a hash table, creating empty one if needed.
+TEST specifies the hash table test function (default: 'equal)."
+  (if (hash-table-p value)
+      value
+    (make-hash-table :test (or test 'equal))))
+
+(defun blame-reveal--ensure-move-copy-metadata ()
+  "Ensure move-copy-metadata is initialized as a hash table."
+  (unless (hash-table-p blame-reveal--move-copy-metadata)
+    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+  blame-reveal--move-copy-metadata)
+
+(defun blame-reveal--reset-all-caches ()
+  "Reset all blame-reveal cache data structures to initial state."
+  (setq blame-reveal--commit-info (make-hash-table :test 'equal)
+        blame-reveal--color-map (make-hash-table :test 'equal)
+        blame-reveal--timestamps nil
+        blame-reveal--recent-commits nil
+        blame-reveal--all-commits-loaded nil))
+
 ;;; Extension Hooks
 
 (defvar blame-reveal-before-load-hook nil

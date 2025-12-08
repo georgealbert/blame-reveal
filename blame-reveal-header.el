@@ -21,23 +21,18 @@ eliminating repeated data preparation code."
   is-uncommitted    ; t if commit is uncommitted changes
   commit-hash       ; Full 40-char commit hash
   short-hash        ; Abbreviated hash (7 chars)
-
   ;; Author info
   author            ; Full author name
   abbrev-author     ; Abbreviated author name
-
   ;; Time info
   date              ; Relative date string (e.g., "2 days ago")
   short-date        ; Shortened date (e.g., "2d")
   timestamp         ; Unix timestamp
-
   ;; Commit content
   summary           ; Commit summary/title
   description       ; Full commit message body
-
   ;; Move/Copy info
   move-meta         ; Move/copy metadata plist or nil
-
   ;; Display helpers
   icon              ; Git commit icon string
   color)            ; Color for this commit
@@ -339,7 +334,7 @@ REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
     ("\\([0-9]+\\) hours? ago" . "h")
     ("\\([0-9]+\\) days? ago" . "d")
     ("\\([0-9]+\\) weeks? ago" . "w")
-    ;; 使用 'mo' 避免与 'm' (minutes) 混淆
+    ;; Use 'mo' to avoid confusion with 'm' (minutes).
     ("\\([0-9]+\\) months? ago" . "mo")
     ("\\([0-9]+\\) years? ago" . "y"))
   "Alist of regex patterns and their compact suffixes for relative time shortening.")

@@ -427,14 +427,18 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
                  (buffer-file-name))
         (condition-case err
             (progn
-              (when blame-reveal--blame-data-range
+              (when (and blame-reveal--blame-data-range
+                         (consp blame-reveal--blame-data-range)
+                         (car blame-reveal--blame-data-range)
+                         (cdr blame-reveal--blame-data-range))
                 (when-let ((range (blame-reveal--get-visible-line-range)))
                   (let ((start-line (car range))
                         (end-line (cdr range))
                         (current-start (car blame-reveal--blame-data-range))
                         (current-end (cdr blame-reveal--blame-data-range)))
-                    (when (or (< start-line current-start)
-                              (> end-line current-end))
+                    (when (and start-line end-line current-start current-end
+                               (or (< start-line current-start)
+                                   (> end-line current-end)))
                       (blame-reveal--ensure-range-loaded start-line end-line)))))
               (unless (and (eq blame-reveal--state-status 'loading)
                            (eq blame-reveal--state-operation 'expansion))

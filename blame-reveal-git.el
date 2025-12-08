@@ -14,25 +14,27 @@
 
 ;;; Git Command Building
 
-(defun blame-reveal--build-blame-command-args (start-line end-line relative-file)
+(defun blame-reveal--build-blame-command-args (start-line end-line relative-file &optional revision)
   "Build git blame command arguments.
 START-LINE and END-LINE specify optional line range.
-RELATIVE-FILE is the file path relative to git root."
-  (let ((args (list "blame" "--porcelain")))
+RELATIVE-FILE is the file path relative to git root.
+REVISION is optional revision to blame (defaults to current-revision or HEAD)."
+  (let* ((args (list "blame" "--porcelain"))
+         (target-revision (or revision
+                             (and (boundp 'blame-reveal--current-revision)
+                                  blame-reveal--current-revision))))
+    ;; Add move/copy detection flags
     (when blame-reveal--detect-moves
-      ;; Git blame move/copy detection flags:
-      ;; -M:     Detect lines moved within the same file
-      ;; -C:     Detect lines copied from other files in the same commit
-      ;; -C -C:  Detect lines copied from any commit (expensive, checks file creation)
-      ;;         This can significantly slow down blame operations (5-10x for large repos)
       (setq args (append args '("-M" "-C" "-C"))))
+    ;; Add line range
     (when (and start-line end-line)
       (setq args (append args (list "-L" (format "%d,%d" start-line end-line)))))
-    (when (and (boundp 'blame-reveal--current-revision)
-               blame-reveal--current-revision
-               (not (eq blame-reveal--current-revision 'uncommitted)))
-      (setq args (append args (list blame-reveal--current-revision))))
-    (append args (list relative-file))))
+    ;; Add revision (skip if uncommitted)
+    (when (and target-revision
+               (not (eq target-revision 'uncommitted)))
+      (setq args (append args (list target-revision))))
+    ;; Add file (with -- separator for clarity)
+    (append args (list "--" relative-file))))
 
 ;;; Unified Helper Functions (ADDED in refactoring)
 
@@ -41,9 +43,7 @@ RELATIVE-FILE is the file path relative to git root."
 Returns t if any metadata was merged, nil otherwise.
 Always ensures blame-reveal--move-copy-metadata is a hash table."
   ;; Always ensure metadata is a hash table
-  (unless (hash-table-p blame-reveal--move-copy-metadata)
-    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
-
+  (blame-reveal--ensure-move-copy-metadata)
   ;; Only merge metadata when M/C detection is enabled
   (when (and blame-reveal--detect-moves
              new-metadata
@@ -56,14 +56,9 @@ Always ensures blame-reveal--move-copy-metadata is a hash table."
 
 (defun blame-reveal--initialize-blame-state ()
   "Initialize all blame-related cache structures."
-  (setq blame-reveal--commit-info (make-hash-table :test 'equal)
-        blame-reveal--color-map (make-hash-table :test 'equal)
-        blame-reveal--timestamps nil
-        blame-reveal--recent-commits nil
-        blame-reveal--all-commits-loaded nil)
+  (blame-reveal--reset-all-caches)
   ;; Always ensure move-copy-metadata is initialized
-  (unless (hash-table-p blame-reveal--move-copy-metadata)
-    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal))))
+  (blame-reveal--ensure-move-copy-metadata))
 
 (defun blame-reveal--process-blame-result (result use-lazy range-info)
   "Process blame RESULT uniformly for sync/async operations.
@@ -370,12 +365,17 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
 
 (defun blame-reveal--load-blame-data-async ()
   "Asynchronously load initial blame data."
-  (unless (blame-reveal--state-start 'initial 'async)
-    (cl-return-from blame-reveal--load-blame-data-async nil))
   (let* ((use-lazy (blame-reveal--should-lazy-load-p))
          (range (when use-lazy (blame-reveal--get-visible-line-range)))
-         (start-line (when use-lazy (car range)))
-         (end-line (when use-lazy (cdr range))))
+         (start-line (when range (car range)))
+         (end-line (when range (cdr range))))
+    (unless (blame-reveal--state-start 'initial 'async
+                                       (if (and start-line end-line)
+                                           (list :start-line start-line
+                                                 :end-line end-line
+                                                 :use-lazy t)
+                                         (list :use-lazy nil)))
+      (cl-return-from blame-reveal--load-blame-data-async nil))
     (if use-lazy
         (if blame-reveal--detect-moves
             (message "Loading git blame with M/C detection: lines %d-%d..." start-line end-line)
@@ -387,10 +387,10 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
      start-line
      end-line
      (lambda (temp-buffer)
-       (blame-reveal--handle-initial-load-complete temp-buffer use-lazy)))))
+       (blame-reveal--handle-initial-load-complete temp-buffer)))))
 
-(defun blame-reveal--handle-initial-load-complete (temp-buffer use-lazy)
-  "Handle completion of initial async blame loading from TEMP-BUFFER (REFACTORED)."
+(defun blame-reveal--handle-initial-load-complete (temp-buffer)
+  "Handle completion of initial async blame loading from TEMP-BUFFER."
   (unless (eq blame-reveal--state-status 'loading)
     (message "[State] Unexpected complete in state %s" blame-reveal--state-status)
     (when (buffer-live-p temp-buffer)
@@ -407,14 +407,15 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
                      (relative-file (file-relative-name file git-root))
                      (result (blame-reveal--parse-blame-output
                               temp-buffer
-                              relative-file)))
-                ;; REFACTORED: Use unified processing
+                              relative-file))
+                     (use-lazy (plist-get blame-reveal--state-metadata :use-lazy))
+                     (range-info (when use-lazy
+                                   (cons (plist-get blame-reveal--state-metadata :start-line)
+                                         (plist-get blame-reveal--state-metadata :end-line)))))
+
                 (if-let ((blame-data
                          (blame-reveal--process-blame-result
-                          result use-lazy
-                          (when use-lazy
-                            (cons (plist-get blame-reveal--state-metadata :start-line)
-                                  (plist-get blame-reveal--state-metadata :end-line))))))
+                          result use-lazy range-info)))
                     (progn
                       (run-hook-with-args 'blame-reveal-after-load-hook (length blame-data))
                       (blame-reveal--state-transition 'rendering)
@@ -424,7 +425,6 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
                   (blame-reveal--state-error "No git blame data available"))))
           (error
            (blame-reveal--state-error (format "Parse error: %s" (error-message-string err))))))
-    ;; Always clean up temp buffer
     (when (buffer-live-p temp-buffer)
       (kill-buffer temp-buffer))))
 

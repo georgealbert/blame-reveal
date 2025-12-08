@@ -694,8 +694,7 @@ blame-reveal--update-header from interfering."
         blame-reveal--blame-data-range nil
         blame-reveal--all-commits-loaded nil)
   ;; Initializing hash table
-  (unless (hash-table-p blame-reveal--move-copy-metadata)
-    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+  (blame-reveal--ensure-move-copy-metadata)
   ;; UI Setup
   (blame-reveal--setup-mode-line)
   (blame-reveal--setup-theme-advice)

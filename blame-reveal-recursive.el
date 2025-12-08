@@ -39,19 +39,6 @@ Sets GIT_PAGER=cat and PAGER=cat for consistent parsing."
 
 ;;; Helper Functions: Git Operations
 
-(defun blame-reveal--build-blame-args (revision start-line end-line relative-file)
-  "Build git blame arguments for REVISION.
-START-LINE and END-LINE specify optional range.
-RELATIVE-FILE is path relative to git root."
-  (let ((args (list "blame" "--porcelain")))
-    (when blame-reveal--detect-moves
-      (setq args (append args '("-M" "-C" "-C"))))
-    (when (and start-line end-line)
-      (setq args (append args (list "-L" (format "%d,%d" start-line end-line)))))
-    (unless (eq revision 'uncommitted)
-      (setq args (append args (list revision))))
-    (append args (list "--" relative-file))))
-
 (defun blame-reveal--git-file-exists-p (revision file)
   "Check if FILE exists at REVISION."
   (let ((git-root (vc-git-root file)))
@@ -112,13 +99,9 @@ Returns (PREV-FILE . PREV-COMMIT) or nil."
   "Reset all data structures with new BLAME-DATA."
   (setq blame-reveal--blame-data blame-data)
   (setq blame-reveal--blame-data-range nil)
-  (setq blame-reveal--commit-info (make-hash-table :test 'equal))
-  (setq blame-reveal--color-map (make-hash-table :test 'equal))
-  (setq blame-reveal--timestamps nil)
-  (setq blame-reveal--recent-commits nil)
-  (setq blame-reveal--all-commits-loaded nil)
+  (blame-reveal--reset-all-caches)
   ;; Reset move/copy metadata
-  (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+  (blame-reveal--ensure-move-copy-metadata))
 
 ;;; State Management
 
@@ -176,30 +159,18 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
 
 (defun blame-reveal--restore-state (state)
   "Restore blame state from STATE."
-  (setq blame-reveal--current-revision (plist-get state :revision))
-  (setq blame-reveal--revision-display (plist-get state :revision-display))
-  (setq blame-reveal--blame-data (plist-get state :blame-data))
-  (setq blame-reveal--blame-data-range (plist-get state :blame-data-range))
-  ;; Ensure commit-info is a hash-table
-  (let ((commit-info (plist-get state :commit-info)))
-    (setq blame-reveal--commit-info
-          (if (hash-table-p commit-info)
-              commit-info
-            (make-hash-table :test 'equal))))
-  ;; Ensure color-map is a hash-table
-  (let ((color-map (plist-get state :color-map)))
-    (setq blame-reveal--color-map
-          (if (hash-table-p color-map)
-              color-map
-            (make-hash-table :test 'equal))))
-  (setq blame-reveal--timestamps (plist-get state :timestamps))
-  (setq blame-reveal--recent-commits (plist-get state :recent-commits))
-  ;; Restore move-copy-metadata
-  (let ((move-copy-metadata (plist-get state :move-copy-metadata)))
-    (setq blame-reveal--move-copy-metadata
-          (if (hash-table-p move-copy-metadata)
-              move-copy-metadata
-            (make-hash-table :test 'equal))))
+  (setq blame-reveal--current-revision (plist-get state :revision)
+        blame-reveal--revision-display (plist-get state :revision-display)
+        blame-reveal--blame-data (plist-get state :blame-data)
+        blame-reveal--blame-data-range (plist-get state :blame-data-range))
+  (setq blame-reveal--commit-info
+        (blame-reveal--ensure-hash-table (plist-get state :commit-info))
+        blame-reveal--color-map
+        (blame-reveal--ensure-hash-table (plist-get state :color-map)))
+  (setq blame-reveal--timestamps (plist-get state :timestamps)
+        blame-reveal--recent-commits (plist-get state :recent-commits)
+        blame-reveal--move-copy-metadata
+        (blame-reveal--ensure-hash-table (plist-get state :move-copy-metadata)))
   (blame-reveal--smooth-transition-render)
   ;; Safely restore point and window-start
   (let ((saved-point (plist-get state :point))
@@ -372,8 +343,8 @@ GIT-ROOT is the repository root."
     (let* ((default-directory git-root)
            (relative-file (file-relative-name file git-root))
            (temp-buffer (generate-new-buffer " *blame-recursive*"))
-           (args (blame-reveal--build-blame-args
-                  revision nil nil relative-file)))
+           (args (blame-reveal--build-blame-command-args
+                  nil nil relative-file revision)))
 
       (blame-reveal--with-git-env
        (message "Git command: git %s" (mapconcat 'identity args " "))
@@ -440,11 +411,11 @@ Returns (BLAME-DATA . MOVE-METADATA)."
             (relative-file (file-relative-name file git-root)))
         (blame-reveal--with-git-env
          (with-temp-buffer
-           (let* ((args (blame-reveal--build-blame-args
-                         revision
+           (let* ((args (blame-reveal--build-blame-command-args
                          (when range (car range))
                          (when range (cdr range))
-                         relative-file))
+                         relative-file
+                         revision))
                   (exit-code (apply #'call-process "git" nil t nil args)))
              (message "Git command: git %s (exit: %d)" (mapconcat 'identity args " ") exit-code)
              (when (not (zerop exit-code))
@@ -720,15 +691,11 @@ Uses smooth transition to avoid flashing."
             ;; Ensure hash-table types
             (let ((commit-info (plist-get head-state :commit-info)))
               (setq blame-reveal--commit-info
-                    (if (hash-table-p commit-info)
-                        commit-info
-                      (make-hash-table :test 'equal))))
+                    (blame-reveal--ensure-hash-table commit-info)))
 
             (let ((color-map (plist-get head-state :color-map)))
               (setq blame-reveal--color-map
-                    (if (hash-table-p color-map)
-                        color-map
-                      (make-hash-table :test 'equal))))
+                    (blame-reveal--ensure-hash-table color-map)))
 
             (setq blame-reveal--timestamps (plist-get head-state :timestamps))
             (setq blame-reveal--recent-commits (plist-get head-state :recent-commits))
@@ -736,9 +703,7 @@ Uses smooth transition to avoid flashing."
             ;; Restore move-copy-metadata from HEAD state
             (let ((move-copy-metadata (plist-get head-state :move-copy-metadata)))
               (setq blame-reveal--move-copy-metadata
-                    (if (hash-table-p move-copy-metadata)
-                        move-copy-metadata
-                      (make-hash-table :test 'equal))))
+                    (blame-reveal--ensure-hash-table move-copy-metadata)))
 
             ;; Don't call any render functions - same as TEST A
             (message "Reset to HEAD"))
