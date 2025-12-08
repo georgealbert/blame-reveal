@@ -115,7 +115,9 @@ Returns (PREV-FILE . PREV-COMMIT) or nil."
   (setq blame-reveal--color-map (make-hash-table :test 'equal))
   (setq blame-reveal--timestamps nil)
   (setq blame-reveal--recent-commits nil)
-  (setq blame-reveal--all-commits-loaded nil))
+  (setq blame-reveal--all-commits-loaded nil)
+  ;; Reset move/copy metadata
+  (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
 
 ;;; State Management
 
@@ -142,6 +144,8 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
                                                 (cdr blame-reveal--timestamps)))
                             :recent-commits (when blame-reveal--recent-commits
                                               (copy-sequence blame-reveal--recent-commits))
+                            :move-copy-metadata (when (hash-table-p blame-reveal--move-copy-metadata)
+                                                  (copy-hash-table blame-reveal--move-copy-metadata))
                             :window-start (window-start)
                             :point (point)
                             :is-head-state t)))
@@ -162,6 +166,8 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
               :timestamps (when blame-reveal--timestamps
                             (cons (car blame-reveal--timestamps)
                                   (cdr blame-reveal--timestamps)))
+              :move-copy-metadata (when (hash-table-p blame-reveal--move-copy-metadata)
+                                    (copy-hash-table blame-reveal--move-copy-metadata))
               :recent-commits blame-reveal--recent-commits
               :window-start (window-start)
               :point (point))
@@ -187,6 +193,12 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
             (make-hash-table :test 'equal))))
   (setq blame-reveal--timestamps (plist-get state :timestamps))
   (setq blame-reveal--recent-commits (plist-get state :recent-commits))
+  ;; Restore move-copy-metadata
+  (let ((move-copy-metadata (plist-get state :move-copy-metadata)))
+    (setq blame-reveal--move-copy-metadata
+          (if (hash-table-p move-copy-metadata)
+              move-copy-metadata
+            (make-hash-table :test 'equal))))
   (blame-reveal--smooth-transition-render)
   ;; Safely restore point and window-start
   (let ((saved-point (plist-get state :point))
@@ -743,6 +755,13 @@ Uses smooth transition to avoid flashing."
             (setq blame-reveal--timestamps (plist-get head-state :timestamps))
             (setq blame-reveal--recent-commits (plist-get head-state :recent-commits))
 
+            ;; Restore move-copy-metadata from HEAD state
+            (let ((move-copy-metadata (plist-get head-state :move-copy-metadata)))
+              (setq blame-reveal--move-copy-metadata
+                    (if (hash-table-p move-copy-metadata)
+                        move-copy-metadata
+                      (make-hash-table :test 'equal))))
+
             ;; Don't call any render functions - same as TEST A
             (message "Reset to HEAD"))
 
@@ -757,6 +776,7 @@ Uses smooth transition to avoid flashing."
               blame-reveal--color-map nil
               blame-reveal--timestamps nil
               blame-reveal--recent-commits nil
+              blame-reveal--move-copy-metadata nil
               blame-reveal--all-commits-loaded nil)
         (blame-reveal--load-blame-data)
         (message "Reset to HEAD (reloaded)"))))

@@ -37,9 +37,8 @@ Returns nil when:
   "Get loading animation color with INTENSITY (0.0 to 1.0).
 Dark theme: intensity controls brightness (0=dark, 1=bright).
 Light theme: intensity controls darkness (0=light/invisible, 1=dark/visible)."
-  (when (blame-reveal--should-update-header-p)
-    (let* ((current-line (line-number-at-pos))
-           (current-block (blame-reveal--get-current-block)))
+  (let* ((scheme blame-reveal-color-scheme)
+         (is-dark (blame-reveal-color--is-dark-theme-p))
          (hue (plist-get scheme :hue))
          (saturation (plist-get scheme :saturation-max))
          ;; Calculate lightness based on intensity and theme
@@ -49,7 +48,7 @@ Light theme: intensity controls darkness (0=light/invisible, 1=dark/visible)."
                         (* 0.70 intensity)
                       ;; Light theme: intensity 1.0 = L 0.45 (medium dark/visible)
                       ;;              intensity 0.0 = L 0.95 (very light/invisible)
-                      (- 0.97 (* 0.45 intensity))))  ; 0.95 - 0.50*1.0 = 0.45
+                      (- 0.97 (* 0.45 intensity))))
          (color (blame-reveal-color--hsl-to-hex hue saturation lightness)))
     color))
 

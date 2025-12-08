@@ -3,6 +3,8 @@
 ;;; Commentary:
 ;; Git command execution, blame data parsing, and commit info fetching.
 ;; Handles both synchronous and asynchronous loading strategies.
+;;
+;; REFACTORED VERSION - Unified data processing logic
 
 ;;; Code:
 
@@ -31,6 +33,91 @@ RELATIVE-FILE is the file path relative to git root."
                (not (eq blame-reveal--current-revision 'uncommitted)))
       (setq args (append args (list blame-reveal--current-revision))))
     (append args (list relative-file))))
+
+;;; Unified Helper Functions (ADDED in refactoring)
+
+(defun blame-reveal--merge-move-copy-metadata (new-metadata)
+  "Merge NEW-METADATA into global move/copy metadata cache.
+Returns t if any metadata was merged, nil otherwise.
+Always ensures blame-reveal--move-copy-metadata is a hash table."
+  ;; Always ensure metadata is a hash table
+  (unless (hash-table-p blame-reveal--move-copy-metadata)
+    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
+
+  ;; Only merge metadata when M/C detection is enabled
+  (when (and blame-reveal--detect-moves
+             new-metadata
+             (hash-table-p new-metadata)
+             (> (hash-table-count new-metadata) 0))
+    (maphash (lambda (k v)
+               (puthash k v blame-reveal--move-copy-metadata))
+             new-metadata)
+    t))
+
+(defun blame-reveal--initialize-blame-state ()
+  "Initialize all blame-related cache structures."
+  (setq blame-reveal--commit-info (make-hash-table :test 'equal)
+        blame-reveal--color-map (make-hash-table :test 'equal)
+        blame-reveal--timestamps nil
+        blame-reveal--recent-commits nil
+        blame-reveal--all-commits-loaded nil)
+  ;; Always ensure move-copy-metadata is initialized
+  (unless (hash-table-p blame-reveal--move-copy-metadata)
+    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal))))
+
+(defun blame-reveal--process-blame-result (result use-lazy range-info)
+  "Process blame RESULT uniformly for sync/async operations.
+RESULT is (blame-data . move-metadata) from git operations.
+USE-LAZY indicates if lazy loading mode is active.
+RANGE-INFO is (start-line . end-line) for lazy mode, nil otherwise.
+Returns the blame-data if successful, nil otherwise."
+  (pcase-let ((`(,blame-data . ,move-metadata) result))
+    (when blame-data
+      ;; Store blame data and range
+      (setq blame-reveal--blame-data blame-data
+            blame-reveal--blame-data-range
+            (if use-lazy range-info nil))
+
+      ;; Initialize caches
+      (blame-reveal--initialize-blame-state)
+
+      ;; Merge move/copy metadata
+      (blame-reveal--merge-move-copy-metadata move-metadata)
+
+      ;; Log message
+      (if (and use-lazy range-info (car range-info) (cdr range-info))
+          (message "Git blame loaded%s: %d lines (range %d-%d)"
+                   (if blame-reveal--detect-moves " with M/C detection" "")
+                   (length blame-data)
+                   (car range-info)
+                   (cdr range-info))
+        (message "Git blame loaded%s: %d lines"
+                 (if blame-reveal--detect-moves " with M/C detection" "")
+                 (length blame-data)))
+
+      ;; Return data for further processing
+      blame-data)))
+
+(defun blame-reveal--call-git-blame-sync (start-line end-line)
+  "Execute git blame synchronously with unified command building.
+START-LINE and END-LINE are optional (nil for full file).
+Returns (BLAME-DATA . MOVE-METADATA) on success, nil on failure."
+  (let* ((file (buffer-file-name))
+         (git-root (and file (vc-git-root file))))
+    (unless (and file git-root (vc-git-registered file))
+      (cl-return-from blame-reveal--call-git-blame-sync nil))
+
+    (let ((default-directory git-root)
+          (relative-file (file-relative-name file git-root))
+          (process-environment (cons "GIT_PAGER=cat"
+                                    (cons "PAGER=cat"
+                                          process-environment))))
+      (with-temp-buffer
+        (let ((args (blame-reveal--build-blame-command-args
+                    start-line end-line relative-file)))
+          (if (zerop (apply #'call-process "git" nil t nil args))
+              (blame-reveal--parse-blame-output (current-buffer) relative-file)
+            nil))))))
 
 ;;; Blame Data Parsing
 
@@ -110,107 +197,49 @@ Only the 'previous' field reliably indicates cross-file move/copy."
 
     (cons (nreverse blame-data) move-metadata)))
 
-;;; Synchronous Loading
+;;; Synchronous Loading (REFACTORED)
 
 (defun blame-reveal--get-blame-data ()
   "Get git blame data for current buffer (entire file) synchronously.
 Returns (BLAME-DATA . MOVE-METADATA) where:
 - BLAME-DATA is list of (LINE-NUMBER . COMMIT-HASH)
 - MOVE-METADATA is hash table of commit -> previous info"
-  (let* ((file (buffer-file-name))
-         (git-root (and file (vc-git-root file))))
-    (if (not (and file git-root (vc-git-registered file)))
-        nil
-      (let ((default-directory git-root)
-            (relative-file (file-relative-name file git-root))
-            (process-environment (cons "GIT_PAGER=cat"
-                                       (cons "PAGER=cat"
-                                             process-environment))))
-        (with-temp-buffer
-          (if (zerop (call-process "git" nil t nil "blame" "--porcelain" relative-file))
-              (let ((result (blame-reveal--parse-blame-output
-                             (current-buffer)
-                             relative-file)))
-                (when (and (cdr result)
-                           (hash-table-p (cdr result))
-                           (> (hash-table-count (cdr result)) 0))
-                  (setq blame-reveal--move-copy-metadata (cdr result)))
-                result)
-            nil))))))
+  (blame-reveal--call-git-blame-sync nil nil))
 
 (defun blame-reveal--get-blame-data-range (start-line end-line)
   "Get git blame data for specific line range START-LINE to END-LINE synchronously.
 Returns (BLAME-DATA . MOVE-METADATA) where:
 - BLAME-DATA is list of (LINE-NUMBER . COMMIT-HASH)
 - MOVE-METADATA is hash table of commit -> previous info"
-  (let* ((file (buffer-file-name))
-         (git-root (and file (vc-git-root file))))
-    (if (not (and file git-root (vc-git-registered file)))
-        nil
-      (let ((default-directory git-root)
-            (relative-file (file-relative-name file git-root))
-            (process-environment (cons "GIT_PAGER=cat"
-                                       (cons "PAGER=cat"
-                                             process-environment))))
-        (with-temp-buffer
-          (if (zerop (call-process "git" nil t nil "blame"
-                                   "--porcelain"
-                                   "-L" (format "%d,%d" start-line end-line)
-                                   relative-file))
-              (let ((result (blame-reveal--parse-blame-output
-                             (current-buffer)
-                             relative-file)))
-                ;; Merge metadata
-                (when (and (cdr result)
-                           (hash-table-p (cdr result))
-                           (> (hash-table-count (cdr result)) 0))
-                  (unless (hash-table-p blame-reveal--move-copy-metadata)
-                    (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
-                  (maphash (lambda (k v)
-                             (puthash k v blame-reveal--move-copy-metadata))
-                           (cdr result)))
-                result)
-            nil))))))
+  (blame-reveal--call-git-blame-sync start-line end-line))
 
 (defun blame-reveal--load-blame-data-sync ()
-  "Load git blame data synchronously."
+  "Load git blame data synchronously (REFACTORED)."
   (unless (blame-reveal--state-start 'initial 'sync)
     (cl-return-from blame-reveal--load-blame-data-sync nil))
+
   (run-hooks 'blame-reveal-before-load-hook)
+
   (condition-case err
       (let* ((file (buffer-file-name))
              (git-root (and file (vc-git-root file))))
         (unless git-root
           (blame-reveal--state-error "Not in git repository")
           (cl-return-from blame-reveal--load-blame-data-sync nil))
-        (let ((use-lazy (blame-reveal--should-lazy-load-p))
-              (blame-data nil)
-              (result nil))
+
+        (let* ((use-lazy (blame-reveal--should-lazy-load-p))
+               (range (when use-lazy (blame-reveal--get-visible-line-range)))
+               ;; Only use lazy if we actually got a valid range
+               (use-lazy-effective (and use-lazy range))
+               (result (if use-lazy-effective
+                          (blame-reveal--call-git-blame-sync (car range) (cdr range))
+                        (blame-reveal--call-git-blame-sync nil nil))))
+
           (blame-reveal--state-transition 'loading)
-          (if use-lazy
-              (when-let ((range (blame-reveal--get-visible-line-range)))
-                (let ((start-line (car range))
-                      (end-line (cdr range)))
-                  (setq result (blame-reveal--get-blame-data-range start-line end-line))
-                  (setq blame-data (car result))
-                  (when blame-data
-                    (setq blame-reveal--blame-data-range (cons start-line end-line))
-                    (message "Git blame loaded (sync, lazy): %d lines (range %d-%d)"
-                             (length blame-data) start-line end-line))))
-            (setq result (blame-reveal--get-blame-data))
-            (setq blame-data (car result))
-            (when blame-data
-              (setq blame-reveal--blame-data-range nil)
-              (message "Git blame loaded (sync, full): %d lines" (length blame-data))))
-          (if blame-data
+
+          (if-let ((blame-data (blame-reveal--process-blame-result result use-lazy-effective range)))
               (progn
                 (blame-reveal--state-transition 'processing)
-                (setq blame-reveal--blame-data blame-data)
-                (setq blame-reveal--commit-info (make-hash-table :test 'equal))
-                (setq blame-reveal--color-map (make-hash-table :test 'equal))
-                (setq blame-reveal--timestamps nil)
-                (setq blame-reveal--recent-commits nil)
-                (setq blame-reveal--all-commits-loaded nil)
                 (run-hook-with-args 'blame-reveal-after-load-hook (length blame-data))
                 (blame-reveal--state-transition 'rendering)
                 (blame-reveal--render-visible-region)
@@ -221,7 +250,7 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
      nil)))
 
 (defun blame-reveal--expand-blame-data-sync (start-line end-line)
-  "Synchronously expand blame data to include START-LINE to END-LINE."
+  "Synchronously expand blame data to include START-LINE to END-LINE (REFACTORED)."
   (unless (blame-reveal--state-start 'expansion 'sync
                                      (list :start-line start-line
                                            :end-line end-line))
@@ -235,14 +264,8 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
               (message "No new blame data in range %d-%d" start-line end-line)
               (blame-reveal--state-complete))
           (blame-reveal--state-transition 'processing)
-          ;; Merge metadata
-          (when (and (hash-table-p move-metadata)
-                     (> (hash-table-count move-metadata) 0))
-            (unless (hash-table-p blame-reveal--move-copy-metadata)
-              (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
-            (maphash (lambda (k v)
-                       (puthash k v blame-reveal--move-copy-metadata))
-                     move-metadata))
+          ;; REFACTORED: Use unified metadata merger
+          (blame-reveal--merge-move-copy-metadata move-metadata)
           (let ((existing-lines (make-hash-table :test 'equal))
                 (added-count 0))
             (dolist (entry blame-reveal--blame-data)
@@ -367,7 +390,7 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
        (blame-reveal--handle-initial-load-complete temp-buffer use-lazy)))))
 
 (defun blame-reveal--handle-initial-load-complete (temp-buffer use-lazy)
-  "Handle completion of initial async blame loading from TEMP-BUFFER."
+  "Handle completion of initial async blame loading from TEMP-BUFFER (REFACTORED)."
   (unless (eq blame-reveal--state-status 'loading)
     (message "[State] Unexpected complete in state %s" blame-reveal--state-status)
     (when (buffer-live-p temp-buffer)
@@ -384,32 +407,15 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
                      (relative-file (file-relative-name file git-root))
                      (result (blame-reveal--parse-blame-output
                               temp-buffer
-                              relative-file))
-                     (blame-data (car result))
-                     (move-metadata (cdr result)))
-                (if blame-data
+                              relative-file)))
+                ;; REFACTORED: Use unified processing
+                (if-let ((blame-data
+                         (blame-reveal--process-blame-result
+                          result use-lazy
+                          (when use-lazy
+                            (cons (plist-get blame-reveal--state-metadata :start-line)
+                                  (plist-get blame-reveal--state-metadata :end-line))))))
                     (progn
-                      (setq blame-reveal--blame-data blame-data)
-                      (setq blame-reveal--commit-info (make-hash-table :test 'equal))
-                      (setq blame-reveal--color-map (make-hash-table :test 'equal))
-                      (setq blame-reveal--timestamps nil)
-                      (setq blame-reveal--recent-commits nil)
-                      (setq blame-reveal--all-commits-loaded nil)
-                      ;; Save metadata
-                      (when (hash-table-p move-metadata)
-                        (setq blame-reveal--move-copy-metadata move-metadata)
-                        (when (> (hash-table-count move-metadata) 0)
-                          (message "Detected %d moved/copied commits"
-                                   (hash-table-count move-metadata))))
-                      (if use-lazy
-                          (let* ((range (blame-reveal--get-visible-line-range))
-                                 (start-line (car range))
-                                 (end-line (cdr range)))
-                            (setq blame-reveal--blame-data-range (cons start-line end-line))
-                            (message "Git blame loaded (async, lazy): %d lines (range %d-%d)"
-                                     (length blame-data) start-line end-line))
-                        (setq blame-reveal--blame-data-range nil)
-                        (message "Git blame loaded (async, full): %d lines" (length blame-data)))
                       (run-hook-with-args 'blame-reveal-after-load-hook (length blame-data))
                       (blame-reveal--state-transition 'rendering)
                       (blame-reveal--load-commits-incrementally)
@@ -435,7 +441,7 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
      (blame-reveal--handle-expansion-complete temp-buffer start-line end-line))))
 
 (defun blame-reveal--handle-expansion-complete (temp-buffer start-line end-line)
-  "Handle completion of async blame expansion from TEMP-BUFFER."
+  "Handle completion of async blame expansion from TEMP-BUFFER (REFACTORED)."
   (unless (eq blame-reveal--state-status 'loading)
     (message "[State] Unexpected complete in state %s" blame-reveal--state-status)
     (when (buffer-live-p temp-buffer)
@@ -459,6 +465,8 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
                     (progn
                       (message "No new blame data in range %d-%d" start-line end-line)
                       (blame-reveal--state-complete))
+                  ;; REFACTORED: Use unified metadata merger
+                  (blame-reveal--merge-move-copy-metadata move-metadata)
                   (let ((existing-lines (make-hash-table :test 'equal))
                         (added-count 0)
                         (new-commits (make-hash-table :test 'equal)))
@@ -479,13 +487,6 @@ Returns (BLAME-DATA . MOVE-METADATA) where:
                                       (max end-line (cdr blame-reveal--blame-data-range))))
                         (setq blame-reveal--blame-data-range
                               (cons start-line end-line)))
-                      ;; metadata
-                      (when (> (hash-table-count move-metadata) 0)
-                        (unless blame-reveal--move-copy-metadata
-                          (setq blame-reveal--move-copy-metadata (make-hash-table :test 'equal)))
-                        (maphash (lambda (k v)
-                                   (puthash k v blame-reveal--move-copy-metadata))
-                                 move-metadata))
                       (maphash (lambda (commit _)
                                  (blame-reveal--ensure-commit-info commit))
                                new-commits)

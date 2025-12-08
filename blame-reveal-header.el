@@ -13,6 +13,65 @@
 (require 'blame-reveal-color)
 (require 'cl-lib)
 
+(cl-defstruct blame-reveal-format-context
+  "Prepared formatting data for all formatters.
+This structure consolidates all the data needed by formatters,
+eliminating repeated data preparation code."
+  ;; Basic info
+  is-uncommitted    ; t if commit is uncommitted changes
+  commit-hash       ; Full 40-char commit hash
+  short-hash        ; Abbreviated hash (7 chars)
+
+  ;; Author info
+  author            ; Full author name
+  abbrev-author     ; Abbreviated author name
+
+  ;; Time info
+  date              ; Relative date string (e.g., "2 days ago")
+  short-date        ; Shortened date (e.g., "2d")
+  timestamp         ; Unix timestamp
+
+  ;; Commit content
+  summary           ; Commit summary/title
+  description       ; Full commit message body
+
+  ;; Move/Copy info
+  move-meta         ; Move/copy metadata plist or nil
+
+  ;; Display helpers
+  icon              ; Git commit icon string
+  color)            ; Color for this commit
+
+(defun blame-reveal--prepare-format-context (commit-hash commit-info color)
+  "Prepare unified formatting context from COMMIT-HASH, COMMIT-INFO, and COLOR.
+Returns a blame-reveal-format-context struct with all necessary data.
+
+This function consolidates all the repeated data preparation logic
+that was duplicated across the three default formatters."
+  (if (string-match-p "^0+$" commit-hash)
+      ;; Uncommitted changes - minimal context
+      (make-blame-reveal-format-context
+       :is-uncommitted t
+       :commit-hash commit-hash
+       :color color)
+    ;; Normal commit - full context
+    (pcase-let ((`(,short-hash ,author ,date ,summary ,timestamp ,description)
+                 commit-info))
+      (make-blame-reveal-format-context
+       :is-uncommitted nil
+       :commit-hash commit-hash
+       :short-hash short-hash
+       :author author
+       :abbrev-author (blame-reveal--abbreviate-author author)
+       :date date
+       :short-date (blame-reveal--shorten-time date)
+       :summary summary
+       :timestamp timestamp
+       :description description
+       :move-meta (blame-reveal--get-move-copy-metadata commit-hash)
+       :icon (blame-reveal--icon "nf-cod-git_commit" "")
+       :color color))))
+
 (defun blame-reveal--ensure-single-line-display (display style)
   "Ensure DISPLAY has exactly one line for inline/margin STYLE.
 If DISPLAY has multiple lines, compress them into one line.
@@ -196,26 +255,100 @@ Returns a string (icon + space) or nil."
   (when move-meta
     (format "%s " (blame-reveal--icon "nf-md-arrow_right_bottom" "󱞩"))))
 
-(defun blame-reveal-format-header-default (commit-hash commit-info color)
-  "Default header formatter with abbreviated author names and move/copy info."
-  (if (string-match-p "^0+$" commit-hash)
-      (make-blame-reveal-commit-display
-       :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
-       :faces (list `(:foreground ,color :weight bold))
-       :color color)
-    (pcase-let ((`(,short-hash ,author ,date ,summary ,_timestamp ,_description) commit-info))
-      (let* ((abbrev-author (blame-reveal--abbreviate-author author))
-             (short-date (blame-reveal--shorten-time date))
-             (icon (blame-reveal--icon "nf-cod-git_commit" ""))
-             ;; 1. Base Line/Face
-             (base-line (format "%s%s · %s · %s · %s"
-                                icon abbrev-author summary short-date short-hash))
-             (base-face `(:foreground ,color :weight bold))
-             ;; 2. Move/Copy Line
-             (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
-             (move-line-cons (when move-meta
-                               (blame-reveal--format-move-copy-for-header move-meta color))))
+;; (defun blame-reveal-format-header-default (commit-hash commit-info color)
+;;   "Default header formatter with abbreviated author names and move/copy info."
+;;   (if (string-match-p "^0+$" commit-hash)
+;;       (make-blame-reveal-commit-display
+;;        :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+;;        :faces (list `(:foreground ,color :weight bold))
+;;        :color color)
+;;     (pcase-let ((`(,short-hash ,author ,date ,summary ,_timestamp ,_description) commit-info))
+;;       (let* ((abbrev-author (blame-reveal--abbreviate-author author))
+;;              (short-date (blame-reveal--shorten-time date))
+;;              (icon (blame-reveal--icon "nf-cod-git_commit" ""))
+;;              ;; 1. Base Line/Face
+;;              (base-line (format "%s%s · %s · %s · %s"
+;;                                 icon abbrev-author summary short-date short-hash))
+;;              (base-face `(:foreground ,color :weight bold))
+;;              ;; 2. Move/Copy Line
+;;              (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
+;;              (move-line-cons (when move-meta
+;;                                (blame-reveal--format-move-copy-for-header move-meta color))))
 
+;;         (if move-line-cons
+;;             (make-blame-reveal-commit-display
+;;              :lines (list base-line (car move-line-cons))
+;;              :faces (list base-face (cdr move-line-cons))
+;;              :color color)
+;;           (make-blame-reveal-commit-display
+;;            :lines (list base-line)
+;;            :faces (list base-face)
+;;            :color color))))))
+
+;; (defun blame-reveal-format-inline-default (commit-hash commit-info color)
+;;   "Default inline format function."
+;;   (if (string-match-p "^0+$" commit-hash)
+;;       (make-blame-reveal-commit-display
+;;        :lines (list (format "[%s]" blame-reveal-uncommitted-label))
+;;        :faces (list `(:foreground ,color))
+;;        :color color)
+;;     (pcase-let ((`(,hash ,author ,_date ,summary ,_ ,_) commit-info))
+;;       (let* ((icon (blame-reveal--icon "nf-cod-git_commit" ""))
+;;              (abbrev-author (blame-reveal--abbreviate-author author))
+;;              (base-text (format "%s%s · %s"
+;;                                 icon abbrev-author summary))
+;;              (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
+;;              (move-info (when move-meta
+;;                           (blame-reveal--format-move-copy-for-inline move-meta)))
+;;              (full-text (concat base-text (or move-info ""))))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list full-text)
+;;          :faces (list `(:foreground ,color :height 0.95))
+;;          :color color)))))
+
+;; (defun blame-reveal-format-margin-default (commit-hash commit-info color)
+;;   "Default margin format function."
+;;   (if (string-match-p "^0+$" commit-hash)
+;;       (make-blame-reveal-commit-display
+;;        :lines (list "Uncommitted")
+;;        :faces (list `(:foreground ,color))
+;;        :color color)
+;;     (pcase-let ((`(,_hash ,author ,date ,_msg ,_ ,_) commit-info))
+;;       (let* ((icon (blame-reveal--icon "nf-cod-git_commit" ""))
+;;              (abbrev-author (blame-reveal--abbreviate-author author))
+;;              (short-date (blame-reveal--shorten-time date))
+;;              (base-text (format "%s%s · %s"
+;;                                 icon abbrev-author short-date))
+;;              (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
+;;              (prefix (blame-reveal--format-move-copy-for-margin move-meta))
+;;              (full-text (concat (or prefix "") base-text)))
+;;         (make-blame-reveal-commit-display
+;;          :lines (list full-text)
+;;          :faces (list `(:foreground ,color :height 0.9))
+;;          :color color)))))
+
+(defun blame-reveal-format-header-default (commit-hash commit-info color)
+  "Default header formatter with abbreviated author names and move/copy info.
+REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
+  (let ((ctx (blame-reveal--prepare-format-context commit-hash commit-info color)))
+    (if (blame-reveal-format-context-is-uncommitted ctx)
+        ;; Uncommitted changes
+        (make-blame-reveal-commit-display
+         :lines (list (format "▸ %s" blame-reveal-uncommitted-label))
+         :faces (list `(:foreground ,color :weight bold))
+         :color color)
+      ;; Normal commit
+      (let* ((base-line (format "%s%s · %s · %s · %s"
+                               (blame-reveal-format-context-icon ctx)
+                               (blame-reveal-format-context-abbrev-author ctx)
+                               (blame-reveal-format-context-summary ctx)
+                               (blame-reveal-format-context-short-date ctx)
+                               (blame-reveal-format-context-short-hash ctx)))
+             (base-face `(:foreground ,color :weight bold))
+             (move-meta (blame-reveal-format-context-move-meta ctx))
+             (move-line-cons (when move-meta
+                              (blame-reveal--format-move-copy-for-header
+                               move-meta color))))
         (if move-line-cons
             (make-blame-reveal-commit-display
              :lines (list base-line (car move-line-cons))
@@ -227,20 +360,23 @@ Returns a string (icon + space) or nil."
            :color color))))))
 
 (defun blame-reveal-format-inline-default (commit-hash commit-info color)
-  "Default inline format function."
-  (if (string-match-p "^0+$" commit-hash)
-      (make-blame-reveal-commit-display
-       :lines (list (format "[%s]" blame-reveal-uncommitted-label))
-       :faces (list `(:foreground ,color))
-       :color color)
-    (pcase-let ((`(,hash ,author ,_date ,summary ,_ ,_) commit-info))
-      (let* ((icon (blame-reveal--icon "nf-cod-git_commit" ""))
-             (abbrev-author (blame-reveal--abbreviate-author author))
-             (base-text (format "%s%s · %s"
-                                icon abbrev-author summary))
-             (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
+  "Default inline format function.
+REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
+  (let ((ctx (blame-reveal--prepare-format-context commit-hash commit-info color)))
+    (if (blame-reveal-format-context-is-uncommitted ctx)
+        ;; Uncommitted changes
+        (make-blame-reveal-commit-display
+         :lines (list (format "[%s]" blame-reveal-uncommitted-label))
+         :faces (list `(:foreground ,color))
+         :color color)
+      ;; Normal commit
+      (let* ((base-text (format "%s%s · %s"
+                               (blame-reveal-format-context-icon ctx)
+                               (blame-reveal-format-context-abbrev-author ctx)
+                               (blame-reveal-format-context-summary ctx)))
+             (move-meta (blame-reveal-format-context-move-meta ctx))
              (move-info (when move-meta
-                          (blame-reveal--format-move-copy-for-inline move-meta)))
+                         (blame-reveal--format-move-copy-for-inline move-meta)))
              (full-text (concat base-text (or move-info ""))))
         (make-blame-reveal-commit-display
          :lines (list full-text)
@@ -248,19 +384,21 @@ Returns a string (icon + space) or nil."
          :color color)))))
 
 (defun blame-reveal-format-margin-default (commit-hash commit-info color)
-  "Default margin format function."
-  (if (string-match-p "^0+$" commit-hash)
-      (make-blame-reveal-commit-display
-       :lines (list "Uncommitted")
-       :faces (list `(:foreground ,color))
-       :color color)
-    (pcase-let ((`(,_hash ,author ,date ,_msg ,_ ,_) commit-info))
-      (let* ((icon (blame-reveal--icon "nf-cod-git_commit" ""))
-             (abbrev-author (blame-reveal--abbreviate-author author))
-             (short-date (blame-reveal--shorten-time date))
-             (base-text (format "%s%s · %s"
-                                icon abbrev-author short-date))
-             (move-meta (blame-reveal--get-move-copy-metadata commit-hash))
+  "Default margin format function.
+REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
+  (let ((ctx (blame-reveal--prepare-format-context commit-hash commit-info color)))
+    (if (blame-reveal-format-context-is-uncommitted ctx)
+        ;; Uncommitted changes
+        (make-blame-reveal-commit-display
+         :lines (list "Uncommitted")
+         :faces (list `(:foreground ,color))
+         :color color)
+      ;; Normal commit
+      (let* ((base-text (format "%s%s · %s"
+                               (blame-reveal-format-context-icon ctx)
+                               (blame-reveal-format-context-abbrev-author ctx)
+                               (blame-reveal-format-context-short-date ctx)))
+             (move-meta (blame-reveal-format-context-move-meta ctx))
              (prefix (blame-reveal--format-move-copy-for-margin move-meta))
              (full-text (concat (or prefix "") base-text)))
         (make-blame-reveal-commit-display
