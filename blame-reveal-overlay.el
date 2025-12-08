@@ -2,11 +2,21 @@
 
 ;;; Commentary:
 ;; Unified overlay management system with registry and indexing.
-;; Handles fringe, header, sticky-header, temp-fringe, and loading overlays.
+;; Handles flicker-free updates, delayed deletion, and specific overlay types
+;; like fringe, header, sticky-header, temp-fringe, and loading indicators.
 
 ;;; Code:
 
 (require 'blame-reveal-core)
+
+;;; Buffer-Local State Variables
+
+(defvar-local blame-reveal--pending-delete-overlays nil
+  "List of overlays pending deletion.
+These overlays will be deleted after the next redisplay cycle to prevent flicker.")
+
+(defvar-local blame-reveal--delete-timer nil
+  "Timer for delayed overlay deletion.")
 
 ;;; Registry Initialization
 
@@ -42,7 +52,9 @@ Returns the overlay."
 
 (defun blame-reveal--unregister-overlay (overlay)
   "Unregister OVERLAY from all indices and delete it.
-Safe to call even if overlay is already deleted or invalid."
+Safe to call even if overlay is already deleted or invalid.
+Note: This performs immediate deletion, use `blame-reveal--schedule-overlay-deletion'
+for flicker-free updates."
   (when (and overlay (overlayp overlay))
     (when-let ((metadata (gethash overlay blame-reveal--overlay-registry)))
       (let ((type (plist-get metadata :type))
@@ -62,7 +74,7 @@ Safe to call even if overlay is already deleted or invalid."
       (when (overlay-buffer overlay)
         (delete-overlay overlay)))))
 
-;;; Query Functions
+;;; Overlay Query Functions
 
 (defun blame-reveal--get-overlays-by-type (type)
   "Get all overlays of TYPE."
@@ -84,29 +96,7 @@ Safe to call even if overlay is already deleted or invalid."
   "Get type of OVERLAY."
   (plist-get (blame-reveal--get-overlay-metadata overlay) :type))
 
-;;; Batch Operations
-
-(defun blame-reveal--clear-overlays-by-type (type)
-  "Clear all overlays of TYPE."
-  (dolist (overlay (blame-reveal--get-overlays-by-type type))
-    (blame-reveal--unregister-overlay overlay))
-  (puthash type nil blame-reveal--overlays-by-type))
-
-(defun blame-reveal--clear-overlays-by-commit (commit)
-  "Clear all overlays for COMMIT."
-  (dolist (overlay (blame-reveal--get-overlays-by-commit commit))
-    (blame-reveal--unregister-overlay overlay))
-  (puthash commit nil blame-reveal--overlays-by-commit))
-
-(defun blame-reveal--clear-all-overlays ()
-  "Clear all blame-reveal overlays."
-  (when blame-reveal--overlay-registry
-    (maphash (lambda (overlay _metadata)
-               (ignore-errors (delete-overlay overlay)))
-             blame-reveal--overlay-registry))
-  (blame-reveal--init-overlay-registry))
-
-;;; High-Level Overlay Creation
+;;; Reuse and Update Utilities
 
 (defun blame-reveal--create-managed-overlay (start end type &optional metadata)
   "Create and register an overlay from START to END of TYPE with METADATA.
@@ -114,8 +104,6 @@ Returns the created and registered overlay."
   (let ((overlay (make-overlay start end)))
     (blame-reveal--register-overlay overlay type metadata)
     overlay))
-
-;;; Reuse and Update
 
 (defun blame-reveal--find-reusable-overlay (type line)
   "Find a reusable overlay of TYPE at LINE.
@@ -128,7 +116,7 @@ Returns overlay if found, nil otherwise."
 
 (defun blame-reveal--update-overlay-metadata (overlay metadata)
   "Update OVERLAY's metadata with new METADATA (plist).
-Preserves :type field."
+Preserves :type field, and updates commit/line indices if they change."
   (when-let ((old-metadata (gethash overlay blame-reveal--overlay-registry)))
     (let* ((type (plist-get old-metadata :type))
            (old-commit (plist-get old-metadata :commit))
@@ -154,6 +142,89 @@ Preserves :type field."
                      blame-reveal--overlays-by-line))))
       (puthash overlay new-metadata blame-reveal--overlay-registry))))
 
+;;; Batch Deletion Operations (Immediate)
+
+(defun blame-reveal--clear-overlays-by-type (type)
+  "Clear all overlays of TYPE immediately."
+  (dolist (overlay (blame-reveal--get-overlays-by-type type))
+    (blame-reveal--unregister-overlay overlay))
+  (puthash type nil blame-reveal--overlays-by-type))
+
+(defun blame-reveal--clear-overlays-by-commit (commit)
+  "Clear all overlays for COMMIT immediately."
+  (dolist (overlay (blame-reveal--get-overlays-by-commit commit))
+    (blame-reveal--unregister-overlay overlay))
+  (puthash commit nil blame-reveal--overlays-by-commit))
+
+(defun blame-reveal--clear-all-overlays ()
+  "Clear all blame-reveal overlays immediately."
+  (when blame-reveal--overlay-registry
+    (maphash (lambda (overlay _metadata)
+               (ignore-errors (delete-overlay overlay)))
+             blame-reveal--overlay-registry))
+  (blame-reveal--init-overlay-registry))
+
+;;; Flicker-Free Core Mechanism (Delayed Deletion)
+
+(defun blame-reveal--schedule-overlay-deletion (overlay)
+  "Schedule OVERLAY for delayed deletion.
+The overlay will be deleted after the next redisplay, preventing flicker."
+  (when (overlayp overlay)
+    (push overlay blame-reveal--pending-delete-overlays)
+    ;; Cancel existing timer
+    (when blame-reveal--delete-timer
+      (cancel-timer blame-reveal--delete-timer))
+    ;; Schedule deletion after next redisplay (using a short timer)
+    (setq blame-reveal--delete-timer
+          (run-with-timer 0.01 nil #'blame-reveal--execute-pending-deletions
+                          (current-buffer)))))
+
+(defun blame-reveal--execute-pending-deletions (buffer)
+  "Execute all pending overlay deletions for BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (dolist (ov blame-reveal--pending-delete-overlays)
+        (when (overlayp ov)
+          (delete-overlay ov)))
+      (setq blame-reveal--pending-delete-overlays nil)
+      (setq blame-reveal--delete-timer nil))))
+
+(defun blame-reveal--cancel-pending-deletions ()
+  "Cancel all pending overlay deletions."
+  (when blame-reveal--delete-timer
+    (cancel-timer blame-reveal--delete-timer)
+    (setq blame-reveal--delete-timer nil))
+  (setq blame-reveal--pending-delete-overlays nil))
+
+(defun blame-reveal--update-overlay-atomic (old-overlay create-fn &rest args)
+  "Update overlay without flicker (Atomic Replacement).
+If OLD-OVERLAY exists, schedule it for delayed deletion and create the new one.
+CREATE-FN is called with ARGS to create the new overlay.
+Returns the new overlay.
+
+This function ensures:
+1. New overlay is created first (under `inhibit-redisplay')
+2. Old overlay is scheduled for delayed deletion
+3. A single `redisplay' call is made to show the change, preventing a visible gap."
+  (let ((new-overlay nil))
+    (let ((inhibit-redisplay t))
+      ;; Create new overlay first
+      (setq new-overlay (apply create-fn args))
+      ;; Schedule old overlay for deletion (if it exists)
+      (when old-overlay
+        (blame-reveal--schedule-overlay-deletion old-overlay)))
+    ;; Force redisplay to show new overlay
+    (redisplay)
+    new-overlay))
+
+(defmacro blame-reveal--with-no-flicker (&rest body)
+  "Execute BODY with flicker prevention.
+Wraps operations in `inhibit-redisplay' and forces a single `redisplay' at the end."
+  `(prog1
+       (let ((inhibit-redisplay t))
+         ,@body)
+     (redisplay)))
+
 ;;; Fringe Overlay Management
 
 (defun blame-reveal--ensure-fringe-face (color)
@@ -176,8 +247,8 @@ Preserves :type field."
              (fringe-face (blame-reveal--ensure-fringe-face color))
              (overlay (or (blame-reveal--find-reusable-overlay 'fringe line-number)
                           (blame-reveal--create-managed-overlay
-                           pos pos 'fringe
-                           (list :commit commit-hash :line line-number)))))
+                            pos pos 'fringe
+                            (list :commit commit-hash :line line-number)))))
         (overlay-put overlay 'before-string
                      (propertize "!" 'display
                                  (list blame-reveal-fringe-side
@@ -185,8 +256,8 @@ Preserves :type field."
                                        fringe-face)))
         (when (overlay-buffer overlay)
           (blame-reveal--update-overlay-metadata
-           overlay
-           (list :commit commit-hash :line line-number)))
+            overlay
+            (list :commit commit-hash :line line-number)))
         overlay))))
 
 (defun blame-reveal--render-block-fringe (block-start block-length commit-hash color)
@@ -201,17 +272,17 @@ Returns list of created/reused overlays."
         (dotimes (i (- render-end render-start -1))
           (let* ((line-num (+ render-start i))
                  (fringe-ov (blame-reveal--create-fringe-overlay
-                             line-num color commit-hash)))
+                              line-num color commit-hash)))
             (when fringe-ov
               (push fringe-ov overlays))))))
     overlays))
 
 (defun blame-reveal--clear-fringe-overlays ()
-  "Clear all fringe overlays."
+  "Clear all fringe overlays immediately."
   (blame-reveal--clear-overlays-by-type 'fringe))
 
 (defun blame-reveal--clear-fringe-overlays-for-commit (commit-hash)
-  "Clear fringe overlays only for specific COMMIT-HASH."
+  "Clear fringe overlays only for specific COMMIT-HASH immediately."
   (dolist (overlay (blame-reveal--get-overlays-by-commit commit-hash))
     (when (eq (blame-reveal--get-overlay-type overlay) 'fringe)
       (blame-reveal--unregister-overlay overlay))))
@@ -221,6 +292,22 @@ Returns list of created/reused overlays."
   (cl-find-if (lambda (ov)
                 (eq (blame-reveal--get-overlay-type ov) 'fringe))
               (blame-reveal--get-overlays-by-line line-number)))
+
+(defun blame-reveal--update-fringe-overlays-atomic (overlay-list)
+  "Update multiple fringe overlays atomically.
+OVERLAY-LIST is a list of (old-overlay . create-fn-with-args) pairs.
+Returns list of new overlays."
+  (let ((new-overlays nil))
+    (blame-reveal--with-no-flicker
+     (dolist (item overlay-list)
+       (let* ((old-overlay (car item))
+              (create-fn (cadr item))
+              (args (cddr item))
+              (new-overlay (apply create-fn args)))
+         (push new-overlay new-overlays)
+         (when old-overlay
+           (blame-reveal--schedule-overlay-deletion old-overlay)))))
+    (nreverse new-overlays)))
 
 ;;; Temp Overlay Management
 
@@ -233,8 +320,8 @@ Returns list of created/reused overlays."
       (let* ((pos (line-beginning-position))
              (fringe-face (blame-reveal--ensure-fringe-face color))
              (overlay (blame-reveal--create-managed-overlay
-                       pos pos 'temp-fringe
-                       (list :commit commit-hash :line line-number))))
+                        pos pos 'temp-fringe
+                        (list :commit commit-hash :line line-number))))
         (overlay-put overlay 'before-string
                      (propertize "!" 'display
                                  (list blame-reveal-fringe-side
@@ -249,9 +336,9 @@ Only renders in visible range."
          (start-line (car range))
          (end-line (cdr range))
          (visible-blocks (blame-reveal--find-block-boundaries
-                          blame-reveal--blame-data
-                          start-line
-                          end-line)))
+                           blame-reveal--blame-data
+                           start-line
+                           end-line)))
     (dolist (block visible-blocks)
       (let ((blk-start (nth 0 block))
             (blk-commit (nth 1 block))
@@ -262,14 +349,14 @@ Only renders in visible range."
               (when (and (>= line-num start-line)
                          (<= line-num end-line))
                 (blame-reveal--create-temp-fringe-overlay
-                 line-num color commit-hash)))))))))
+                  line-num color commit-hash)))))))))
 
 (defun blame-reveal--clear-temp-overlays ()
-  "Clear all temporary fringe overlays."
+  "Clear all temporary fringe overlays immediately."
   (blame-reveal--clear-overlays-by-type 'temp-fringe))
 
 (defun blame-reveal--clear-temp-overlays-for-commit (commit-hash)
-  "Clear temporary overlays only for specific COMMIT-HASH."
+  "Clear temporary overlays only for specific COMMIT-HASH immediately."
   (dolist (overlay (blame-reveal--get-overlays-by-commit commit-hash))
     (when (eq (blame-reveal--get-overlay-type overlay) 'temp-fringe)
       (blame-reveal--unregister-overlay overlay))))
@@ -280,6 +367,45 @@ Only renders in visible range."
     (with-current-buffer buf
       (when (equal blame-reveal--current-block-commit hash)
         (blame-reveal--render-temp-overlays-for-commit hash col)))))
+
+;;; Header No-Flicker Utilities
+
+(defun blame-reveal--replace-header-overlay (new-overlay)
+  "Replace current header overlay with NEW-OVERLAY without flicker.
+Safely handles the transition from the old to the new header."
+  (let ((old-header blame-reveal--header-overlay))
+    (setq blame-reveal--header-overlay new-overlay)
+    (when old-header
+      (blame-reveal--schedule-overlay-deletion old-header))))
+
+(defun blame-reveal--replace-sticky-header-overlay (new-overlay)
+  "Replace current sticky header overlay with NEW-OVERLAY without flicker."
+  (let ((old-sticky blame-reveal--sticky-header-overlay))
+    (setq blame-reveal--sticky-header-overlay new-overlay)
+    (when old-sticky
+      (blame-reveal--schedule-overlay-deletion old-sticky))))
+
+(defun blame-reveal--clear-header-no-flicker ()
+  "Clear header overlay without flicker.
+Uses delayed deletion to prevent visible gap."
+  (when blame-reveal--header-overlay
+    (blame-reveal--schedule-overlay-deletion blame-reveal--header-overlay)
+    (setq blame-reveal--header-overlay nil)))
+
+(defun blame-reveal--clear-sticky-header-no-flicker ()
+  "Clear sticky header overlay without flicker."
+  (when blame-reveal--sticky-header-overlay
+    (blame-reveal--schedule-overlay-deletion blame-reveal--sticky-header-overlay)
+    (setq blame-reveal--sticky-header-overlay nil)))
+
+(defun blame-reveal--clear-all-no-flicker ()
+  "Clear all overlays (headers and stickies) without flicker."
+  (blame-reveal--with-no-flicker
+   (blame-reveal--clear-header-no-flicker)
+   (blame-reveal--clear-sticky-header-no-flicker)
+   ;; Add other flicker-free clearing calls here if needed,
+   ;; e.g., for `fringe` overlays, though they are usually cleared immediately.
+   ))
 
 ;;; Statistics and Debugging
 
@@ -301,6 +427,12 @@ Only renders in visible range."
                           (format "%s=%d" type (plist-get stats type)))
                         (cons :total blame-reveal--overlay-types)
                         ", "))))
+
+;;; Mode Cleanup
+
+(defun blame-reveal--cleanup-no-flicker-system ()
+  "Cleanup the no-flicker system when mode is disabled."
+  (blame-reveal--cancel-pending-deletions))
 
 (provide 'blame-reveal-overlay)
 ;;; blame-reveal-overlay.el ends here

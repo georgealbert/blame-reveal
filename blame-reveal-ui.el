@@ -376,7 +376,7 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
                      (blame-reveal--update-header-impl))))))))))
 
 (defun blame-reveal--update-header-impl ()
-  "Implementation of header update (using unified header system)."
+  "Implementation of header update (using flicker-free system)."
   (when blame-reveal--blame-data
     (blame-reveal--ensure-visible-commits-loaded)
     (if-let ((current-block (blame-reveal--get-current-block)))
@@ -384,7 +384,6 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
                (block-start (cdr current-block)))
           (unless (equal commit-hash blame-reveal--current-block-commit)
             (setq blame-reveal--current-block-commit commit-hash))
-          ;; FIXED: Use blame-reveal--get-commit-color for consistent colors
           (let* ((color (blame-reveal--get-commit-color commit-hash))
                  (is-uncommitted (blame-reveal--is-uncommitted-p commit-hash))
                  (is-old-commit (and (not is-uncommitted)
@@ -397,17 +396,11 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
             (when blame-reveal--temp-overlay-timer
               (cancel-timer blame-reveal--temp-overlay-timer)
               (setq blame-reveal--temp-overlay-timer nil))
-            ;; Smooth update: create new header first, then delete old one
-            ;; This avoids the "flash" where there's no header
+            ;; Use flicker-free overlay replacement
             (when need-rebuild
-              (let ((old-header blame-reveal--header-overlay))
-                ;; Create new header
-                (setq blame-reveal--header-overlay
-                      (blame-reveal--create-header-overlay
-                       block-start commit-hash color hide-header-fringe))
-                ;; Delete old header after new one is created
-                (when old-header
-                  (delete-overlay old-header))))
+              (let ((new-header (blame-reveal--create-header-overlay
+                                 block-start commit-hash color hide-header-fringe)))
+                (blame-reveal--replace-header-overlay new-header)))
             (when (or is-old-commit
                       (and is-uncommitted blame-reveal-show-uncommitted-fringe))
               (setq blame-reveal--temp-overlay-timer
@@ -416,12 +409,11 @@ Throttles updates to avoid excessive calls during rapid cursor movement."
                      #'blame-reveal--temp-overlay-renderer
                      (current-buffer) commit-hash color)))
             (setq blame-reveal--last-rendered-commit commit-hash)))
+      ;; No current block - clear header
       (when blame-reveal--temp-overlay-timer
         (cancel-timer blame-reveal--temp-overlay-timer)
         (setq blame-reveal--temp-overlay-timer nil))
-      (when blame-reveal--header-overlay
-        (delete-overlay blame-reveal--header-overlay)
-        (setq blame-reveal--header-overlay nil))
+      (blame-reveal--clear-header-no-flicker)
       (blame-reveal--clear-temp-overlays)
       (setq blame-reveal--current-block-commit nil)
       (setq blame-reveal--last-rendered-commit nil))

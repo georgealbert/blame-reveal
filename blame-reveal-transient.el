@@ -84,15 +84,14 @@
     (concat title scope (or revision ""))))
 
 (defun blame-reveal--refresh-header-after-load (&optional _)
-  "Refresh header after data reload (if needed).
-Modified to avoid header flashing - clears cache to force rebuild in update-header."
+  "Refresh header after data reload.
+Now uses unified flicker-free system - no special handling needed."
   (when blame-reveal-mode
     ;; Clear cache to force update-header to rebuild
-    ;; update-header-impl already handles smooth transition (create new, delete old)
     (setq blame-reveal--current-block-commit nil)
     (setq blame-reveal--last-rendered-commit nil)
     (setq blame-reveal--last-update-line nil)
-    ;; Call update-header which will smoothly rebuild
+    ;; Update header - flicker prevention handled by core system
     (blame-reveal--update-header)))
 
 ;;; Custom Variable Class
@@ -186,79 +185,63 @@ Modified to avoid header flashing - clears cache to force rebuild in update-head
   "Refresh display and transient menu after setting certain variables."
   (let ((var (oref obj variable)))
     (cond
-     ;; Header style changed
-     ((eq var 'blame-reveal-header-style)
+     ;; Days limit or gradient quality changed
+     ((or (eq var 'blame-reveal-recent-days-limit)
+          (eq var 'blame-reveal-gradient-quality))
       (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
-        (when (not (eq value 'margin))
-          (blame-reveal--restore-window-margins))
-        (blame-reveal--recolor-and-render)
-        (blame-reveal--force-update-header))
-      (run-with-idle-timer 0.05 nil
-                          (lambda ()
-                            (when (and transient-current-command
-                                      (eq transient-current-command 'blame-reveal-menu))
-                              (transient-setup 'blame-reveal-menu)))))
-     ;; Fringe side
-     ((eq var 'blame-reveal-fringe-side)
-      (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+        (blame-reveal--update-recent-commits)
         (blame-reveal--recolor-and-render)
         (blame-reveal--force-update-header)))
-     ;; Margin side
-     ((eq var 'blame-reveal-margin-side)
-      (when (and (boundp 'blame-reveal-mode)
-                 blame-reveal-mode
-                 (eq blame-reveal-header-style 'margin))
-        (blame-reveal--recolor-and-render)
-        (blame-reveal--force-update-header)))
+
      ;; Uncommitted fringe
      ((eq var 'blame-reveal-show-uncommitted-fringe)
       (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
         (blame-reveal--recolor-and-render)
-        (blame-reveal--force-update-header))))))
+        (blame-reveal--force-update-header)))
+
+     ;; Lazy threshold or async blame
+     ((or (eq var 'blame-reveal-lazy-load-threshold)
+          (eq var 'blame-reveal-async-blame))
+      ;; These don't need immediate refresh
+      nil))))
 
 ;;; Display Settings Infixes
 
-(transient-define-infix blame-reveal--infix-header-style ()
-  "Header display style."
-  :description "Header style"
-  :class 'blame-reveal-lisp-variable
-  :variable 'blame-reveal-header-style
-  :display-map (blame-reveal--get-display-map 'header-style)
-  :key "s"
-  :reader (lambda (prompt _ _)
-            (intern (completing-read
-                     prompt '("block" "inline" "margin")
-                     nil t))))
+(transient-define-suffix blame-reveal--set-header-style (style)
+  "Set header style to STYLE and update immediately."
+  (interactive)
+  (setq blame-reveal-header-style style)
+  (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+    ;; Restore margins when switching away from margin
+    (when (not (eq style 'margin))
+      (blame-reveal--restore-window-margins))
+    ;; Setup margins when switching to margin
+    (when (eq style 'margin)
+      (blame-reveal--ensure-window-margins))
+    ;; Force immediate header refresh
+    (blame-reveal--force-update-header))
+  ;; Return to main menu
+  (transient-setup 'blame-reveal-menu))
 
-(transient-define-infix blame-reveal--infix-fringe-side ()
-  "Fringe side for blame indicators."
-  :description "Fringe side"
-  :class 'blame-reveal-lisp-variable
-  :variable 'blame-reveal-fringe-side
-  :display-map (blame-reveal--get-display-map 'fringe-side)
-  :key "f"
-  :reader (lambda (prompt _ _)
-            (intern (completing-read
-                     prompt '("left-fringe" "right-fringe")
-                     nil t))))
+(transient-define-suffix blame-reveal--set-fringe-side (side)
+  "Set fringe side to SIDE and update immediately."
+  (interactive)
+  (setq blame-reveal-fringe-side side)
+  (when (and (boundp 'blame-reveal-mode) blame-reveal-mode)
+    (blame-reveal--recolor-and-render)
+    (blame-reveal--force-update-header))
+  (transient-setup 'blame-reveal-menu))
 
-(transient-define-infix blame-reveal--infix-margin-side ()
-  "Margin side when using margin header style."
-  :description (lambda ()
-                 (if (eq blame-reveal-header-style 'margin)
-                     "Margin side"
-                   "Margin side (inactive)"))
-  :class 'blame-reveal-lisp-variable
-  :variable 'blame-reveal-margin-side
-  :display-map (blame-reveal--get-display-map 'margin-side)
-  :key "m"
-  :inapt-if-not (lambda () (eq blame-reveal-header-style 'margin))
-  :reader (lambda (prompt _ _)
-            (if (eq blame-reveal-header-style 'margin)
-                (intern (completing-read
-                         prompt '("left" "right")
-                         nil t))
-              (user-error "Margin side only applies when header-style is 'margin'"))))
+(transient-define-suffix blame-reveal--set-margin-side (side)
+  "Set margin side to SIDE and update immediately."
+  (interactive)
+  (setq blame-reveal-margin-side side)
+  (when (and (boundp 'blame-reveal-mode) blame-reveal-mode
+             (eq blame-reveal-header-style 'margin))
+    (blame-reveal--restore-window-margins)
+    (blame-reveal--ensure-window-margins)
+    (blame-reveal--force-update-header))
+  (transient-setup 'blame-reveal-menu))
 
 ;;; Move/Copy Detection
 
@@ -389,6 +372,44 @@ Modified to avoid header flashing - clears cache to force rebuild in update-head
           (plist-put (copy-sequence blame-reveal-color-scheme) :saturation-max new))
     (when blame-reveal-mode
       (blame-reveal--recolor-and-render))))
+
+(transient-define-prefix blame-reveal-header-style-menu ()
+  "Select header display style."
+  ["Header Style"
+   ("b" "Block (above code)"
+    (lambda () (interactive) (blame-reveal--set-header-style 'block)))
+   ("i" "Inline (after first line)"
+    (lambda () (interactive) (blame-reveal--set-header-style 'inline)))
+   ("m" "Margin (left/right margin)"
+    (lambda () (interactive) (blame-reveal--set-header-style 'margin)))]
+  ["Actions"
+   ("q" "Back" transient-quit-one)])
+
+(transient-define-prefix blame-reveal-fringe-side-menu ()
+  "Select fringe side for blame indicators."
+  ["Fringe Side"
+   ("l" "Left fringe"
+    (lambda () (interactive) (blame-reveal--set-fringe-side 'left-fringe)))
+   ("r" "Right fringe"
+    (lambda () (interactive) (blame-reveal--set-fringe-side 'right-fringe)))]
+  ["Actions"
+   ("q" "Back" transient-quit-one)])
+
+(transient-define-prefix blame-reveal-margin-side-menu ()
+  "Select margin side (when header style is margin)."
+  [:description
+   (lambda ()
+     (if (eq blame-reveal-header-style 'margin)
+         "Margin Side"
+       "Margin Side (only active when header style is 'margin')"))
+   ("l" "Left margin"
+    (lambda () (interactive) (blame-reveal--set-margin-side 'left))
+    :inapt-if-not (lambda () (eq blame-reveal-header-style 'margin)))
+   ("r" "Right margin"
+    (lambda () (interactive) (blame-reveal--set-margin-side 'right))
+    :inapt-if-not (lambda () (eq blame-reveal-header-style 'margin)))]
+  ["Actions"
+   ("q" "Back" transient-quit-one)])
 
 ;;;###autoload
 (transient-define-prefix blame-reveal-color-scheme-menu ()
@@ -541,9 +562,9 @@ Modified to avoid header flashing - clears cache to force rebuild in update-head
   [:description blame-reveal--menu-title
    ["Display"
     ("=" blame-reveal--toggle-scope)
-    (blame-reveal--infix-header-style)
-    (blame-reveal--infix-fringe-side)
-    (blame-reveal--infix-margin-side)]
+    ("h" "Header style..." blame-reveal-header-style-menu)
+    ("f" "Fringe side..." blame-reveal-fringe-side-menu)
+    ("m" "Margin side..." blame-reveal-margin-side-menu)]
    ["Colors"
     (blame-reveal--infix-days-limit)
     (blame-reveal--infix-gradient-quality)

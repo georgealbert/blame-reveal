@@ -582,6 +582,10 @@ Used when settings change via transient menu."
     (when blame-reveal--header-update-timer
       (cancel-timer blame-reveal--header-update-timer)
       (setq blame-reveal--header-update-timer nil))
+    ;; Clear existing header (using flicker-free system)
+    (blame-reveal--clear-header-no-flicker)
+    ;; Reset last rendered commit to force rebuild
+    (setq blame-reveal--last-rendered-commit nil)
     ;; Update immediately (bypass idle delay)
     (blame-reveal--update-header-impl)))
 
@@ -722,6 +726,11 @@ Handles Hooks, Timers, Overlays, and State."
 
   ;; Cancel State Machine (Stops async processes)
   (blame-reveal--state-cancel "mode disabled")
+
+  ;; Clean up flicker-free system
+  (when (fboundp 'blame-reveal--cleanup-no-flicker-system)
+    (blame-reveal--cleanup-no-flicker-system))
+
   ;; Clean UI / Overlays
   (blame-reveal--restore-window-margins)
   (blame-reveal--clear-all-overlays) ; The unified registry clearer

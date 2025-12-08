@@ -653,20 +653,21 @@ For inline and margin styles, ensures the result is single-line."
       (and (not header-visible) in-this-block))))
 
 (defun blame-reveal--clear-sticky-header ()
-  "Clear sticky header."
-  (when blame-reveal--sticky-header-overlay
-    (delete-overlay blame-reveal--sticky-header-overlay)
-    (setq blame-reveal--sticky-header-overlay nil)))
+  "Clear sticky header using flicker-free system."
+  (blame-reveal--clear-sticky-header-no-flicker))
 
 (defun blame-reveal--update-sticky-header ()
-  "Update sticky header."
-  (blame-reveal--clear-sticky-header)
+  "Update sticky header using flicker-free system."
   (when-let* ((current-block (blame-reveal--get-current-block))
               (commit-hash (car current-block))
               (block-start-line (cdr current-block))
               (current-line (line-number-at-pos)))
-    (when (blame-reveal--should-show-sticky-header-p commit-hash block-start-line current-line)
-      (setq blame-reveal--sticky-header-overlay (blame-reveal--create-sticky-header-overlay commit-hash)))))
+    (if (blame-reveal--should-show-sticky-header-p commit-hash block-start-line current-line)
+        ;; Show sticky header - use flicker-free replacement
+        (let ((new-sticky (blame-reveal--create-sticky-header-overlay commit-hash)))
+          (blame-reveal--replace-sticky-header-overlay new-sticky))
+      ;; Hide sticky header - use flicker-free clearing
+      (blame-reveal--clear-sticky-header-no-flicker))))
 
 (defun blame-reveal--create-header-overlay (line-number commit-hash color &optional no-fringe)
   "Create header overlay."

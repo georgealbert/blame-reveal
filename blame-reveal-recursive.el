@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'blame-reveal)
+(require 'blame-reveal-overlay)
 (require 'cl-lib)
 
 ;;; Macros
@@ -215,49 +216,26 @@ On first recursive blame from HEAD, also saves initial HEAD state at bottom of s
 ;;; Smooth Transition Rendering (Performance Critical)
 
 (defun blame-reveal--smooth-transition-render ()
-  "Render new blame data by reusing existing overlays when possible.
-Minimizes visual disruption during recursive blame."
+  "Render new blame data using flicker-free update system.
+This function is now simplified - all flicker prevention is handled
+by the unified no-flicker system."
   (when blame-reveal--blame-data
-    (let* ((range (blame-reveal--get-visible-line-range))
-           (start-line (car range))
-           (end-line (cdr range))
-           (blocks (blame-reveal--find-block-boundaries
-                    blame-reveal--blame-data start-line end-line))
-           (rendered-lines (make-hash-table :test 'eql)))
-
-      ;; Ensure commit info for all visible blocks
-      (dolist (block blocks)
-        (let ((commit-hash (nth 1 block)))
-          (blame-reveal--ensure-commit-info commit-hash)))
-
-      (blame-reveal--update-recent-commits)
-
-      ;; Render each block
-      (dolist (block blocks)
-        (let* ((block-start (nth 0 block))
-               (commit-hash (nth 1 block))
-               (block-length (nth 2 block)))
-          (unless (and (blame-reveal--is-uncommitted-p commit-hash)
-                       (not blame-reveal-show-uncommitted-fringe))
-            (when (blame-reveal--should-render-commit commit-hash)
-              (let ((color (blame-reveal--get-commit-color commit-hash))
-                    (block-end (+ block-start block-length -1)))
-                (let ((render-start (max block-start start-line))
-                      (render-end (min block-end end-line)))
-                  (dotimes (i (- render-end render-start -1))
-                    (let ((line-num (+ render-start i)))
-                      (blame-reveal--create-fringe-overlay
-                       line-num color commit-hash)
-                      (puthash line-num t rendered-lines)))))))))
-
-      ;; Clean up overlays for lines no longer in view
-      (dolist (overlay (blame-reveal--get-overlays-by-type 'fringe))
-        (when (overlay-buffer overlay)
-          (let ((line (plist-get (blame-reveal--get-overlay-metadata overlay) :line)))
-            (when (and line (not (gethash line rendered-lines)))
-              (blame-reveal--unregister-overlay overlay)))))
-
-      (blame-reveal--update-header))))
+    ;; Use atomic update to prevent flicker
+    (blame-reveal--with-no-flicker
+     ;; Render visible region
+     (let* ((range (blame-reveal--get-visible-line-range))
+            (start-line (car range))
+            (end-line (cdr range)))
+       ;; Ensure commit info and render
+       (let ((blocks (blame-reveal--find-block-boundaries
+                      blame-reveal--blame-data start-line end-line)))
+         (dolist (block blocks)
+           (blame-reveal--ensure-commit-info (nth 1 block))))
+       (blame-reveal--update-recent-commits)
+       (blame-reveal--render-visible-region))
+     ;; Update header and sticky header
+     (blame-reveal--update-header)
+     (blame-reveal--update-sticky-header))))
 
 ;;; Error Handling
 
