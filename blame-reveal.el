@@ -514,6 +514,56 @@ Example schemes:
                  (blame-reveal--recolor-and-render))))))
   :group 'blame-reveal)
 
+(defcustom blame-reveal--high-contrast-colors
+  '(
+    "#FAFAD2"  ;; Light Goldenrod Yellow (最亮)
+    "#7CFC00"  ;; Lime Green / Lawn Green
+    "#E0FFFF"  ;; Light Cyan
+    "#FFFF00"  ;; Bright Yellow
+    "#FFB6C1"  ;; Light Pink
+    "#FFA07A"  ;; Light Salmon
+    "#F08080"  ;; Light Coral
+    "#D3D3D3"  ;; Light Gray
+    "#B0C4DE"  ;; Light Steel Blue
+    "#87CEFA"  ;; Light Sky Blue
+    "#90EE90"  ;; Light Green
+    "#ADD8E6"  ;; Light Blue
+    "#00FA9A"  ;; Medium Spring Green
+    "#40E0D0"  ;; Turquoise
+    "#51CF66"  ;; Bright Green
+    "#00BFFF"  ;; Deep Sky Blue
+    "#FF8C00"  ;; Dark Orange
+    "#FF1493"  ;; Deep Pink
+    "#98FB98"  ;; Pale Green
+    "#FF0080"  ;; Hot Pink
+    "#FF4500"  ;; Orange Red
+    "#8FBC8F"  ;; Dark Sea Green
+    "#BA55D3"  ;; Medium Orchid
+    "#9370DB"  ;; Medium Purple
+    "#B8860B"  ;; Dark Goldenrod
+    "#6A5ACD"  ;; Slate Blue
+    "#DC143C"  ;; Crimson
+    "#00B7FF"  ;; Electric Blue
+    "#B22222"  ;; Firebrick
+    "#5F9EA0"  ;; Cadet Blue
+    "#00CED1"  ;; Dark Turquoise
+    "#3CB371"  ;; Medium Sea Green
+    "#6B8E23"  ;; Olive Drab
+    "#4682B4"  ;; Steel Blue
+    "#008B8B"  ;; Dark Cyan
+    "#4169E1"  ;; Royal Blue
+    "#00FF7F"  ;; Spring Green
+    "#0066CC"  ;; Vivid Blue
+    "#8B008B"  ;; Dark Magenta
+    "#9400D3"  ;; Dark Violet
+    "#20B2AA"  ;; Light Sea Green
+    "#5A189A"  ;; Deep Purple
+    "#483D8B"  ;; Dark Slate Blue (最暗)
+    )
+  "预定义的dark theme的高对比度颜色列表"
+  :type 'list
+  :group 'blame-reveal)
+
 ;;; Performance Customization
 
 (defcustom blame-reveal-render-margin 50

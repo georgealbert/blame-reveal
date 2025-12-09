@@ -129,6 +129,15 @@
 
 ;;; Color Access Functions
 
+(defvar-local blame-reveal--color-index 0
+  "color计数器，取模后从color list里面按顺序取color.")
+
+(defun blame-reveal--random-from-contrast-pool ()
+  "从高对比度颜色池中随机选择"
+  (setq-local blame-reveal--color-index (+ 1 blame-reveal--color-index))
+  ;; (nth (random (length blame-reveal--high-contrast-colors)) blame-reveal--high-contrast-colors)
+  (nth (mod (length blame-reveal--high-contrast-colors) blame-reveal--color-index) blame-reveal--high-contrast-colors))
+
 (defun blame-reveal--get-commit-color (commit-hash)
   "Get the calculated color for COMMIT-HASH. Uses cache and handles all types."
   (unless blame-reveal--color-strategy (blame-reveal--init-color-strategy))
@@ -151,10 +160,13 @@
                        (context (list :timestamp timestamp :rank rank
                                       :total-recent (length blame-reveal--recent-commits)
                                       :is-dark (blame-reveal-color--is-dark-theme-p))))
-                  (blame-reveal-color-calculate blame-reveal--color-strategy commit-hash context)))
+                  ;; (blame-reveal-color-calculate blame-reveal--color-strategy commit-hash context)
+                  (blame-reveal--random-from-contrast-pool)))
                ;; Old Commit (get old commit color)
                (t
-                (blame-reveal--get-old-commit-color)))))
+                ;; (blame-reveal--get-old-commit-color)
+                (blame-reveal--random-from-contrast-pool)
+                ))))
         ;; Cache and return color, or default if calculation fails
         (when color (puthash commit-hash color blame-reveal--color-map))
         (or color (if (blame-reveal-color--is-dark-theme-p) "#6699cc" "#7799bb")))))))
