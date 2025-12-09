@@ -201,27 +201,6 @@ Also removes overlays from registry if they were registered."
     (setq blame-reveal--delete-timer nil))
   (setq blame-reveal--pending-delete-overlays nil))
 
-(defun blame-reveal--update-overlay-atomic (old-overlay create-fn &rest args)
-  "Update overlay without flicker (Atomic Replacement).
-If OLD-OVERLAY exists, schedule it for delayed deletion and create the new one.
-CREATE-FN is called with ARGS to create the new overlay.
-Returns the new overlay.
-
-This function ensures:
-1. New overlay is created first (under `inhibit-redisplay')
-2. Old overlay is scheduled for delayed deletion
-3. A single `redisplay' call is made to show the change, preventing a visible gap."
-  (let ((new-overlay nil))
-    (let ((inhibit-redisplay t))
-      ;; Create new overlay first
-      (setq new-overlay (apply create-fn args))
-      ;; Schedule old overlay for deletion (if it exists)
-      (when old-overlay
-        (blame-reveal--schedule-overlay-deletion old-overlay)))
-    ;; Force redisplay to show new overlay
-    (redisplay)
-    new-overlay))
-
 (defmacro blame-reveal--with-no-flicker (&rest body)
   "Execute BODY with flicker prevention.
 Wraps operations in `inhibit-redisplay' and forces a single `redisplay' at the end."

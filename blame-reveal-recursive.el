@@ -292,38 +292,40 @@ Returns non-nil on success, nil if user cancels."
         (message "Staying at current location")
         nil)))))
 
-(defun blame-reveal--view-file-at-revision (file commit git-root)
-  "View FILE at COMMIT in a temporary buffer.
-GIT-ROOT is the repository root."
-  (let* ((default-directory git-root)
-         (relative-file (file-relative-name file git-root))
-         (buffer-name (format "*%s @ %s*"
-                              (file-name-nondirectory file)
-                              (substring commit 0 8)))
-         (temp-buffer (get-buffer-create buffer-name)))
-    (with-current-buffer temp-buffer
-      (let ((inhibit-read-only t))
+(defun blame-reveal--view-file-at-revision (relative-file commit git-root)
+  "View the historical content of RELATIVE-FILE at COMMIT in a new buffer.
+
+This function handles the crucial step of setting the Major Mode for
+non-standard buffers (like *file.el @ hash*), ensuring syntax highlighting.
+
+Returns the new buffer on success, nil on failure."
+  (let* ((buffer-name (format "*%s @ %s*"
+                              (file-name-nondirectory relative-file)
+                              (substring commit 0 blame-reveal--short-hash-length)))
+         ;; Create a mock file name (e.g., 'init-layout.el') for mode identification
+         (mock-file-name (file-name-nondirectory relative-file))
+         (new-buffer (get-buffer-create buffer-name)))
+    (with-current-buffer new-buffer
+      (let ((inhibit-read-only t)
+            (original-buffer-file-name buffer-file-name))
         (erase-buffer)
+        ;; 1. TEMPORARILY set 'buffer-file-name'.
+        ;; This is the critical step for 'normal-mode' to recognize the file type.
+        (setq buffer-file-name mock-file-name)
+        ;; Use git show to fetch content and insert into buffer
         (blame-reveal--with-git-env
-         (condition-case err
-             (if (zerop (call-process "git" nil t nil "show"
-                                      (concat commit ":" relative-file)))
-                 (progn
-                   (goto-char (point-min))
-                   (set-auto-mode)
-                   (view-mode 1)
-                   (setq buffer-read-only t)
-                   (message "Viewing %s at %s (read-only)"
-                            (file-name-nondirectory file)
-                            (substring commit 0 8)))
-               (error "Failed to retrieve file content from git"))
-           (error
-            (erase-buffer)
-            (insert (format "Error retrieving file: %s\n\n" (error-message-string err)))
-            (insert (format "Command: git show %s:%s\n" commit relative-file))
-            (insert (format "Working directory: %s\n" default-directory))
-            (message "Failed to view file: %s" (error-message-string err)))))))
-    (pop-to-buffer temp-buffer)))
+          (call-process "git" nil t nil "show" (format "%s:%s" commit relative-file)))
+        (goto-char (point-min))
+        ;; 2. FORCE Major Mode check (Syntax Highlighting)
+        (normal-mode)
+        ;; 3. CLEANUP: Reset 'buffer-file-name' to original (likely nil)
+        ;; to prevent the user from accidentally saving the historical content.
+        (setq buffer-file-name original-buffer-file-name)
+        ;; 4. Set read-only and display
+        (setq buffer-read-only t)
+        (pop-to-buffer (current-buffer))
+        (message "Viewing historical file: %s in %s" relative-file major-mode)
+        new-buffer))))
 
 ;;; Asynchronous Loading
 
@@ -557,7 +559,7 @@ Returns non-nil if action was executed, nil if stopped/cancelled."
        (if blame-reveal--detect-moves
            (message "%s" message-text)
          ;; Add tip about M/C detection when not enabled
-         (message "%s. Tip: Try enabling move/copy detection (M) to trace file origin"
+         (message "%s. Tip: Try enabling move/copy detection [M] to trace file origin"
                   message-text))
        nil)
 

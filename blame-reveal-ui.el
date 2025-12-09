@@ -610,27 +610,5 @@ Used for immediate aborts (error or cancel)."
          (blame-reveal--load-blame-data))))
    (current-buffer)))
 
-(defun blame-reveal--soft-update ()
-  "Soft update: reload blame data without clearing UI.
-Useful for toggling settings like M/C detection where we want
-to avoid header flashing."
-  (interactive)
-  ;; Cancel any ongoing operation but don't clean up UI
-  (when (blame-reveal--state-is-busy-p)
-    (message "[Update] Cancelling current operation...")
-    (blame-reveal--stop-loading-animation)
-    ;; Cancel state but skip UI cleanup
-    (when (fboundp 'blame-reveal--state-cancel-no-ui-cleanup)
-      (blame-reveal--state-cancel-no-ui-cleanup "soft update requested")))
-  ;; Immediately reload data without delay
-  (setq blame-reveal--blame-data nil
-        blame-reveal--blame-data-range nil
-        blame-reveal--commit-info nil
-        blame-reveal--color-map nil
-        blame-reveal--timestamps nil
-        blame-reveal--recent-commits nil
-        blame-reveal--all-commits-loaded nil)
-  (blame-reveal--load-blame-data))
-
 (provide 'blame-reveal-ui)
 ;;; blame-reveal-ui.el ends here

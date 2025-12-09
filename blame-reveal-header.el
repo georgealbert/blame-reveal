@@ -301,7 +301,7 @@ REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
         ;; Uncommitted changes
         (make-blame-reveal-commit-display
          :lines (list (format "[%s]" blame-reveal-uncommitted-label))
-         :faces (list `(:foreground ,color))
+         :faces (list `(:foreground ,color :weight bold))
          :color color)
       ;; Normal commit
       (let* ((base-text (format "%s%s · %s"
@@ -325,7 +325,7 @@ REFACTORED: Uses blame-reveal-format-context to eliminate duplicate code."
         ;; Uncommitted changes
         (make-blame-reveal-commit-display
          :lines (list "Uncommitted")
-         :faces (list `(:foreground ,color))
+         :faces (list `(:foreground ,color :weight bold))
          :color color)
       ;; Normal commit
       (let* ((base-text (format "%s%s · %s"
@@ -365,7 +365,7 @@ up to the two largest time units, assuming Git-like relative time format."
             (setq date-string (string-trim-left date-string "[ ,]"))))))
     ;; 3. Combine the results with a space (e.g., "2y 1mo")
     (if result
-        (mapconcat 'identity result ",")
+        (mapconcat 'identity result " ")
       ;; If no unit was found, return the original string
       date-string)))
 
