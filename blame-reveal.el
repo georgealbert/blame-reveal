@@ -517,21 +517,20 @@ Example schemes:
 (defcustom blame-reveal--high-contrast-colors
   '(
     "#FAFAD2"  ;; Light Goldenrod Yellow (最亮)
-    "#7CFC00"  ;; Lime Green / Lawn Green
-    "#E0FFFF"  ;; Light Cyan
-    "#FFFF00"  ;; Bright Yellow
+    "#87CEFA"  ;; Light Sky Blue
     "#FFB6C1"  ;; Light Pink
+    "#B22222"  ;; Firebrick
     "#FFA07A"  ;; Light Salmon
     "#F08080"  ;; Light Coral
     "#D3D3D3"  ;; Light Gray
     "#B0C4DE"  ;; Light Steel Blue
-    "#87CEFA"  ;; Light Sky Blue
     "#90EE90"  ;; Light Green
     "#ADD8E6"  ;; Light Blue
     "#00FA9A"  ;; Medium Spring Green
     "#40E0D0"  ;; Turquoise
     "#51CF66"  ;; Bright Green
     "#00BFFF"  ;; Deep Sky Blue
+    "#7CFC00"  ;; Lime Green / Lawn Green
     "#FF8C00"  ;; Dark Orange
     "#FF1493"  ;; Deep Pink
     "#98FB98"  ;; Pale Green
@@ -539,12 +538,12 @@ Example schemes:
     "#FF4500"  ;; Orange Red
     "#8FBC8F"  ;; Dark Sea Green
     "#BA55D3"  ;; Medium Orchid
+    "#E0FFFF"  ;; Light Cyan
     "#9370DB"  ;; Medium Purple
     "#B8860B"  ;; Dark Goldenrod
     "#6A5ACD"  ;; Slate Blue
     "#DC143C"  ;; Crimson
     "#00B7FF"  ;; Electric Blue
-    "#B22222"  ;; Firebrick
     "#5F9EA0"  ;; Cadet Blue
     "#00CED1"  ;; Dark Turquoise
     "#3CB371"  ;; Medium Sea Green
@@ -557,6 +556,7 @@ Example schemes:
     "#8B008B"  ;; Dark Magenta
     "#9400D3"  ;; Dark Violet
     "#20B2AA"  ;; Light Sea Green
+    "#FFFF00"  ;; Bright Yellow
     "#5A189A"  ;; Deep Purple
     "#483D8B"  ;; Dark Slate Blue (最暗)
     )
