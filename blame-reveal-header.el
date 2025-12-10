@@ -241,7 +241,8 @@ Returns a cons cell (LINE . FACE) or nil."
                        icon
                        prev-file
                        (substring prev-commit 0 blame-reveal--short-hash-length)))
-         (face `(:foreground ,color :height 0.9 :slant italic)))
+         (fg-main (blame-reveal--get-contrasting-foreground color))
+         (face `(:foreground ,fg-main :background ,color :height 0.9 :slant italic)))
     (cons line face)))
 
 (defun blame-reveal--format-move-copy-for-inline (move-meta)
